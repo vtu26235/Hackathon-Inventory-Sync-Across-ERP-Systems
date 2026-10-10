@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Place in: src/test/munit/validation-flow-test-suite.xml  (tests Team 1's inventory-validationFlow) -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="validation-flow-test-suite.xml" />
+
+    <munit:test name="valid-event-is-accepted" description="Complete valid event -> VALID">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-1', events: [{eventId: 'E1', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-TSHIRT-BLK-M', locationCode: 'WH-CHN-01', movementType: 'GOODS_RECEIPT', quantityOnHand: 480, reservedQuantity: 35, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResponse.validCount]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.validationResponse.rejectedCount]" is="#[MunitTools::equalTo(0)]" />
+            <munit-tools:assert-that expression="#[vars.validationResponse.validationStatus]" is="#[MunitTools::equalTo('VALID')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="missing-sku-is-rejected" description="Missing required field -> REJECTED">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-2', events: [{eventId: 'E2', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', locationCode: 'WH-CHN-01', movementType: 'SALE', quantityOnHand: 10, reservedQuantity: 1, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResponse.rejectedCount]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.validationResults[0].status]" is="#[MunitTools::equalTo('REJECTED')]" />
+            <munit-tools:assert-that expression="#[vars.validationResults[0].reason]" is="#[MunitTools::equalTo('Missing required field')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="negative-quantity-is-rejected" description="Negative quantityOnHand -> REJECTED">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-3', events: [{eventId: 'E3', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-CHN-01', movementType: 'SALE', quantityOnHand: -5, reservedQuantity: 0, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResults[0].status]" is="#[MunitTools::equalTo('REJECTED')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="reserved-greater-than-onhand-is-rejected" description="reserved &gt; onHand -> REJECTED">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-4', events: [{eventId: 'E4', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-CHN-01', movementType: 'SALE', quantityOnHand: 10, reservedQuantity: 20, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResults[0].status]" is="#[MunitTools::equalTo('REJECTED')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="unknown-movement-type-is-rejected" description="Unknown movementType is rejected, not defaulted">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-5', events: [{eventId: 'E5', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-CHN-01', movementType: 'XYZ', quantityOnHand: 10, reservedQuantity: 1, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResults[0].status]" is="#[MunitTools::equalTo('REJECTED')]" />
+            <munit-tools:assert-that expression="#[vars.validationResults[0].reason]" is="#[MunitTools::equalTo('Invalid movementType. Allowed values: GOODS_RECEIPT, SALE, RETURN, ADJUSTMENT, TRANSFER')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="bulk-mixed-validity-keeps-valid-events" description="Bulk partial success: one bad event does not reject the batch">
+        <munit:behavior>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-6', events: [{eventId: 'E6', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-CHN-01', movementType: 'SALE', quantityOnHand: 10, reservedQuantity: 1, unitOfMeasure: 'EA'}, {eventId: 'E7', eventVersion: 1, eventTimestamp: '2026-09-11T12:40:15+05:30', locationCode: 'WH-CHN-01', movementType: 'SALE', quantityOnHand: 10, reservedQuantity: 1, unitOfMeasure: 'EA'}, {eventId: 'E8', eventVersion: 2, eventTimestamp: '2026-09-11T12:41:15+05:30', sku: 'SKU-B', locationCode: 'STR-CHN-07', movementType: 'RETURN', quantityOnHand: 12, reservedQuantity: 2, unitOfMeasure: 'EA'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-validationFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.validationResponse.processedCount]" is="#[MunitTools::equalTo(3)]" />
+            <munit-tools:assert-that expression="#[vars.validationResponse.validCount]" is="#[MunitTools::equalTo(2)]" />
+            <munit-tools:assert-that expression="#[vars.validationResponse.rejectedCount]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.validationResponse.validationStatus]" is="#[MunitTools::equalTo('PARTIAL')]" />
+        </munit:validation>
+    </munit:test>
+
+</mule>

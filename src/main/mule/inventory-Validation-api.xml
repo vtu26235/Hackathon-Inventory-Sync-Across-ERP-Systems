@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config1" doc:name="HTTP Listener config" doc:id="7c47e61e-1ad4-4836-99d3-3ddee00a5a13" >
+		<http:listener-connection host="0.0.0.0" port="8091" />
+	</http:listener-config>
+	<flow name="inventory-validationFlow" doc:id="d8f5c8e1-666e-46e7-9eb4-c9f330ee1ff7" >
+		<http:listener doc:name="Listener" doc:id="2d93c3d8-8cae-422d-8c2d-0d023733712a" path="/internal/inventory/validate" allowedMethods="POST" config-ref="HTTP_Listener_config1"/>
+		<logger level="INFO" doc:name="Logger" doc:id="7d75efd4-a5b8-410d-9681-5b159858b8dd" message="Inventory validation request received"/>
+		<set-variable value="#[payload]" doc:name="Set Variable" doc:id="a5990bfb-b2f3-4740-bb21-4e152a9eadce" variableName="inventoryRequest"/>
+		<ee:transform doc:name="Transform Message" doc:id="b9a747a2-ed20-4804-8460-352e2adaa060" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    sourceSystem: (payload as Object).sourceSystem,
+    batchId: (payload as Object).batchId,
+    events: (payload as Object).events
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<set-variable value="#[payload]" doc:name="Set Variable" doc:id="600ced8e-4ca9-4c1e-917f-15f1895a0101" variableName="inventoryRequest"/>
+		<foreach doc:name="For Each" doc:id="8070138d-400e-44d4-9176-cd1e5bc09d9b" collection="#[payload.events]">
+			<set-variable value="#[payload]" doc:name="Set Variable" doc:id="080006f0-08b5-4bf8-9398-7aca5c2bf4fd" variableName="inventoryEvent"/>
+			<choice doc:name="Choice" doc:id="7a4c010a-192e-48c0-bf17-f648601600e3">
+			<when expression='#[vars.inventoryEvent.eventId != null&#10;    and vars.inventoryEvent.eventId != ""&#10;    and vars.inventoryEvent.eventVersion != null&#10;    and vars.inventoryEvent.eventTimestamp != null&#10;    and vars.inventoryEvent.sku != null&#10;    and vars.inventoryEvent.sku != ""&#10;    and vars.inventoryEvent.locationCode != null&#10;    and vars.inventoryEvent.locationCode != ""&#10;    and vars.inventoryEvent.movementType != null&#10;    and vars.inventoryEvent.movementType != ""&#10;    and vars.inventoryEvent.quantityOnHand != null&#10;    and vars.inventoryEvent.reservedQuantity != null&#10;    and vars.inventoryEvent.unitOfMeasure != null&#10;    and vars.inventoryEvent.unitOfMeasure != ""]'>
+					<choice doc:name="Choice" doc:id="b7780058-4b78-4488-8ccd-e0911053efe7" >
+						<when expression="#[vars.inventoryEvent.quantityOnHand &gt;= 0&#10;    and vars.inventoryEvent.reservedQuantity &gt;= 0&#10;    and vars.inventoryEvent.reservedQuantity &lt;= vars.inventoryEvent.quantityOnHand]">
+							<choice doc:name="Choice" doc:id="6bbbb1b4-8323-4526-b3b4-d22688cc09c8" >
+								<when expression='#[[&#10;        "GOODS_RECEIPT",&#10;        "SALE",&#10;        "RETURN",&#10;        "ADJUSTMENT",&#10;        "TRANSFER"&#10;    ] contains vars.inventoryEvent.movementType]'>
+									<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.validationResults default []) ++ [{&#10;    eventId: vars.inventoryEvent.eventId,&#10;    eventVersion: vars.inventoryEvent.eventVersion,&#10;    eventTimestamp: vars.inventoryEvent.eventTimestamp,&#10;    sku: vars.inventoryEvent.sku,&#10;    locationCode: vars.inventoryEvent.locationCode,&#10;    movementType: vars.inventoryEvent.movementType,&#10;    quantityOnHand: vars.inventoryEvent.quantityOnHand,&#10;    reservedQuantity: vars.inventoryEvent.reservedQuantity,&#10;    unitOfMeasure: vars.inventoryEvent.unitOfMeasure,&#10;    referenceDocument: vars.inventoryEvent.referenceDocument default null,&#10;    status: "VALID",&#10;    reason: null&#10;}]]' doc:name="Set Variable" doc:id="28883216-3acf-4adb-8abb-285c93b0c1ae" variableName="validationResults"/>
+								</when>
+								<otherwise >
+									<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.validationResults default []) ++ [{&#10;    eventId: vars.inventoryEvent.eventId,&#10;    eventVersion: vars.inventoryEvent.eventVersion,&#10;    eventTimestamp: vars.inventoryEvent.eventTimestamp,&#10;    sku: vars.inventoryEvent.sku,&#10;    locationCode: vars.inventoryEvent.locationCode,&#10;    movementType: vars.inventoryEvent.movementType,&#10;    quantityOnHand: vars.inventoryEvent.quantityOnHand,&#10;    reservedQuantity: vars.inventoryEvent.reservedQuantity,&#10;    unitOfMeasure: vars.inventoryEvent.unitOfMeasure,&#10;    referenceDocument: vars.inventoryEvent.referenceDocument default null,&#10;    status: "REJECTED",&#10;    reason: "Invalid movementType. Allowed values: GOODS_RECEIPT, SALE, RETURN, ADJUSTMENT, TRANSFER"&#10;}]]' doc:name="Set Variable" doc:id="543663a4-44dd-4486-8924-aa3d2e5c6dc8" variableName="validationResults"/>
+								</otherwise>
+							</choice>
+						</when>
+						<otherwise >
+							<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.validationResults default []) ++ [{&#10;    eventId: vars.inventoryEvent.eventId default null,&#10;    eventVersion: vars.inventoryEvent.eventVersion default null,&#10;    eventTimestamp: vars.inventoryEvent.eventTimestamp default null,&#10;    sku: vars.inventoryEvent.sku default null,&#10;    locationCode: vars.inventoryEvent.locationCode default null,&#10;    movementType: vars.inventoryEvent.movementType default null,&#10;    quantityOnHand: vars.inventoryEvent.quantityOnHand default null,&#10;    reservedQuantity: vars.inventoryEvent.reservedQuantity default null,&#10;    unitOfMeasure: vars.inventoryEvent.unitOfMeasure default null,&#10;    referenceDocument: vars.inventoryEvent.referenceDocument default null,&#10;    status: "REJECTED",&#10;    reason: "Missing required field"&#10;}]]' doc:name="Set Variable" doc:id="6cb57e58-9ea1-4ac2-85f9-2d2c2c4d8e7e" variableName="validationResults"/>
+						</otherwise>
+					</choice>
+			</when>
+				<otherwise >
+					<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.validationResults default []) ++ [{&#10;    eventId: vars.inventoryEvent.eventId default null,&#10;    eventVersion: vars.inventoryEvent.eventVersion default null,&#10;    eventTimestamp: vars.inventoryEvent.eventTimestamp default null,&#10;    sku: vars.inventoryEvent.sku default null,&#10;    locationCode: vars.inventoryEvent.locationCode default null,&#10;    movementType: vars.inventoryEvent.movementType default null,&#10;    quantityOnHand: vars.inventoryEvent.quantityOnHand default null,&#10;    reservedQuantity: vars.inventoryEvent.reservedQuantity default null,&#10;    unitOfMeasure: vars.inventoryEvent.unitOfMeasure default null,&#10;    referenceDocument: vars.inventoryEvent.referenceDocument default null,&#10;    status: "REJECTED",&#10;    reason: "Missing required field"&#10;}]]' doc:name="Set Variable" doc:id="9c81a190-d73e-4540-a1f3-a89a2f42656b" variableName="validationResults"/>
+				</otherwise>
+		</choice>
+		</foreach>
+		<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;{&#10;    sourceSystem: vars.inventoryRequest.sourceSystem,&#10;    batchId: vars.inventoryRequest.batchId,&#10;    validationStatus:&#10;        if (sizeOf(vars.validationResults filter ($.status == "REJECTED")) &gt; 0)&#10;            "PARTIAL"&#10;        else&#10;            "VALID",&#10;    processedCount: sizeOf(vars.validationResults),&#10;    validCount: sizeOf(vars.validationResults filter ($.status == "VALID")),&#10;    rejectedCount: sizeOf(vars.validationResults filter ($.status == "REJECTED")),&#10;    events: vars.validationResults&#10;}]' doc:name="Set Variable" doc:id="fee62994-e193-4031-bbea-504d0c1fbfd7" variableName="validationResponse"/>
+	</flow>
+</mule>

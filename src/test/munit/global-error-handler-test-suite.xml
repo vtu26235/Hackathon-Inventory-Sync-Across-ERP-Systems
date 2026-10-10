@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Place in: src/test/munit/global-error-handler-test-suite.xml -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+
+    <munit:config name="global-error-handler-test-suite.xml" />
+
+    <!-- ===== helper flows: they only raise errors. No error handler here, so the GLOBAL one is used ===== -->
+    <flow name="test-raise-invalid-event">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{eventId: 'INV-EVT-1'}]" />
+        <raise-error type="INVENTORY:INVALID_EVENT" description="sku is required" />
+    </flow>
+    <flow name="test-raise-unknown-reference">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:UNKNOWN_REFERENCE" description="SKU=SKU-UNKNOWN, locationCode=WH-CHN-01" />
+    </flow>
+    <flow name="test-raise-version-conflict">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:VERSION_CONFLICT" description="Inventory was changed by another transaction" />
+    </flow>
+    <flow name="test-raise-negative-available">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:NEGATIVE_AVAILABLE" description="quantityOnHand=10, reservedQuantity=20" />
+    </flow>
+    <flow name="test-raise-unknown-movement">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:UNKNOWN_MOVEMENT" description="movementType=XYZ" />
+    </flow>
+    <flow name="test-raise-unexpected">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{eventId: 'INV-EVT-9'}]" />
+        <raise-error type="APP:UNEXPECTED" description="database exploded: secret internal detail" />
+    </flow>
+    <flow name="test-always-failing-with-retry">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <until-successful maxRetries="1" millisBetweenRetries="10">
+            <raise-error type="APP:ALWAYS_FAILS" description="db timeout" />
+        </until-successful>
+    </flow>
+
+    <!-- ===== BUSINESS ERRORS: clean response, nothing sent to DLQ ===== -->
+    <munit:test name="invalid-event-returns-400-and-no-dlq" description="Business error -> 400, no DLQ">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-invalid-event" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(400)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INVALID_INVENTORY_EVENT')]" />
+            <munit-tools:assert-that expression="#[payload.success]" is="#[MunitTools::equalTo(false)]" />
+            <munit-tools:assert-that expression="#[payload.correlationId]" is="#[MunitTools::equalTo('TEST-CORR-1')]" />
+            <munit-tools:assert-that expression="#[payload.details]" is="#[MunitTools::equalTo('sku is required')]" />
+            <munit-tools:verify-call processor="vm:publish" times="0" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="unknown-reference-returns-404" description="Unknown SKU/location -> 404">
+        <munit:execution>
+            <flow-ref name="test-raise-unknown-reference" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(404)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('REFERENCE_NOT_FOUND')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="version-conflict-returns-409" description="Concurrent update conflict -> 409">
+        <munit:execution>
+            <flow-ref name="test-raise-version-conflict" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(409)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('VERSION_CONFLICT')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="negative-available-returns-422" description="Negative stock protection -> 422">
+        <munit:execution>
+            <flow-ref name="test-raise-negative-available" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(422)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('NEGATIVE_AVAILABLE_QUANTITY')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="unsupported-movement-returns-400" description="Unknown movement type is rejected, not defaulted">
+        <munit:execution>
+            <flow-ref name="test-raise-unknown-movement" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(400)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('UNSUPPORTED_MOVEMENT_TYPE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <!-- ===== SYSTEM / UNEXPECTED ERRORS: DLQ + safe response ===== -->
+    <munit:test name="unexpected-error-returns-500-and-goes-to-dlq" description="Unexpected error -> 500, DLQ once, internal detail hidden">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-unexpected" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INTERNAL_SERVER_ERROR')]" />
+            <munit-tools:assert-that expression="#[payload.details]" is="#[MunitTools::equalTo('See logs for this correlationId')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="retry-exhausted-returns-503-and-goes-to-dlq" description="Retries used up -> 503, DLQ once">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-always-failing-with-retry" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(503)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('SERVICE_UNAVAILABLE')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="dlq-failure-does-not-hide-original-error" description="If DLQ publish fails, caller still gets the clean error">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="VM:CONNECTIVITY" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-unexpected" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INTERNAL_SERVER_ERROR')]" />
+        </munit:validation>
+    </munit:test>
+
+    <!-- ===== METRICS ===== -->
+    <munit:test name="batch-metrics-counts-stale-and-conflicts" description="Stale and conflict counts are calculated per batch">
+        <munit:behavior>
+            <set-variable variableName="correlationId" value="TEST-CORR-1" />
+            <set-payload value="#[{batchId: 'B-1', results: [{eventId: 'E1', outcome: 'ACCEPTED'}, {eventId: 'E2', outcome: 'IGNORED_STALE'}, {eventId: 'E3', outcome: 'VERSION_CONFLICT'}, {eventId: 'E4', outcome: 'REJECTED'}, {eventId: 'E5', outcome: 'DUPLICATE'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="log-batch-metrics-subflow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.batchMetrics.processed]" is="#[MunitTools::equalTo(5)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.accepted]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.stale]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.versionConflict]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.rejected]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.duplicate]" is="#[MunitTools::equalTo(1)]" />
+        </munit:validation>
+    </munit:test>
+
+</mule>

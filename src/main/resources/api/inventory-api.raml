@@ -1,0 +1,848 @@
+#%RAML 1.0
+
+title: Retail Inventory Synchronization API
+
+description: |
+  MuleSoft Process API for Retail Inventory Synchronization.
+
+  This API receives inventory update events from ERP systems,
+  browser applications, Postman and other source systems.
+
+  The API supports:
+  - Inventory event validation
+  - Product and location reference validation
+  - Stale and duplicate event detection
+  - Event version checking
+  - Optimistic concurrency handling
+  - Available quantity calculation
+  - Inventory database synchronization
+  - Immutable inventory movement audit
+  - Low-stock detection
+  - Queue-based fan-out to downstream consumers
+  - Bulk processing with partial success
+  - Correlation and traceability
+  - Standardized error handling
+
+version: v1
+
+baseUri: /api/v1
+
+protocols:
+  - HTTP
+
+mediaType: application/json
+
+
+# ============================================================
+# COMMON TRAIT
+# ============================================================
+
+traits:
+
+  correlation:
+
+    headers:
+
+      x-correlation-id:
+        description: |
+          Optional correlation ID used to trace an inventory
+          request across MuleSoft, database, queue and
+          downstream consumer systems.
+
+        type: string
+        required: false
+        minLength: 1
+        maxLength: 100
+
+        example: "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64"
+
+
+# ============================================================
+# DATA TYPES
+# ============================================================
+
+types:
+
+
+  # ==========================================================
+  # INVENTORY EVENT
+  # ==========================================================
+
+  InventoryEvent:
+
+    type: object
+
+    additionalProperties: false
+
+    properties:
+
+      eventId:
+        description: |
+          Unique identifier of the inventory event.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 100
+
+        example: "INV-EVT-77120"
+
+
+      eventVersion:
+        description: |
+          Version number of the inventory event for the
+          corresponding SKU and location.
+
+          Used to identify stale, duplicate and out-of-order
+          inventory events and to support optimistic locking.
+
+        type: integer
+        required: true
+        minimum: 1
+
+        example: 14
+
+
+      eventTimestamp:
+        description: |
+          Timestamp at which the source system generated
+          the inventory event.
+
+        type: datetime
+        required: true
+
+        example: "2026-09-11T12:40:15+05:30"
+
+
+      sku:
+        description: |
+          Stock Keeping Unit identifying the product.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 100
+
+        example: "SKU-TSHIRT-BLK-M"
+
+
+      locationCode:
+        description: |
+          Warehouse or store location code where the
+          inventory change occurred.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 100
+
+        example: "WH-CHN-01"
+
+
+      movementType:
+        description: |
+          Type of inventory movement.
+
+        type: string
+        required: true
+
+        enum:
+          - GOODS_RECEIPT
+          - SALE
+          - RETURN
+          - TRANSFER
+          - ADJUSTMENT
+
+        example: "GOODS_RECEIPT"
+
+
+      quantityOnHand:
+        description: |
+          Quantity of inventory currently held at the
+          specified SKU and location.
+
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 480
+
+
+      reservedQuantity:
+        description: |
+          Quantity reserved for customer orders or other
+          inventory commitments.
+
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 35
+
+
+      unitOfMeasure:
+        description: |
+          Unit of measure used for the inventory quantity.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 20
+
+        example: "EA"
+
+
+      referenceDocument:
+        description: |
+          Optional source document such as goods receipt,
+          sales order, transfer document or adjustment document.
+
+        type: string
+        required: false
+        minLength: 1
+        maxLength: 100
+
+        example: "GRN-2026-55210"
+
+
+  # ==========================================================
+  # INVENTORY REQUEST
+  # ==========================================================
+
+  InventoryRequest:
+
+    type: object
+
+    additionalProperties: false
+
+    properties:
+
+      sourceSystem:
+        description: |
+          Source system that generated the inventory event.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 100
+
+        example: "ERP-SAP-PRD"
+
+
+      batchId:
+        description: |
+          Identifier for the request or batch of inventory events.
+
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 100
+
+        example: "INV-BATCH-2026-09-11-0034"
+
+
+      events:
+        description: |
+          One or more inventory events.
+
+          A single event is represented as an array containing
+          one event. Multiple events can be submitted together
+          for bulk processing.
+
+        type: InventoryEvent[]
+
+        required: true
+
+        minItems: 1
+
+
+  # ==========================================================
+  # INDIVIDUAL EVENT RESULT
+  # ==========================================================
+
+  InventoryResult:
+
+    type: object
+
+    additionalProperties: false
+
+    properties:
+
+      eventId:
+        description: Identifier of the processed event.
+        type: string
+        required: true
+
+        example: "INV-EVT-77120"
+
+
+      sku:
+        description: Product SKU.
+        type: string
+        required: true
+
+        example: "SKU-TSHIRT-BLK-M"
+
+
+      locationCode:
+        description: Inventory location.
+        type: string
+        required: true
+
+        example: "WH-CHN-01"
+
+
+      outcome:
+        description: |
+          Processing outcome of the inventory event.
+
+        type: string
+        required: true
+
+        enum:
+          - ACCEPTED
+          - IGNORED_STALE
+          - REJECTED
+          - DUPLICATE
+          - VERSION_CONFLICT
+
+        example: "ACCEPTED"
+
+
+      availableQuantity:
+        description: |
+          Available inventory after a successfully accepted
+          inventory update.
+
+          availableQuantity =
+          quantityOnHand - reservedQuantity
+
+        type: integer
+        minimum: 0
+        required: false
+
+        example: 445
+
+
+      lowStock:
+        description: |
+          Indicates whether the available inventory is at or
+          below the configured reorder point.
+
+        type: boolean
+        required: false
+
+        example: false
+
+
+      publishedTo:
+        description: |
+          Downstream consumers that received the accepted
+          inventory change.
+
+        type: string[]
+        required: false
+
+        example:
+          - "warehouse"
+          - "fulfilment"
+
+
+      reason:
+        description: |
+          Explanation for stale, duplicate, rejected or
+          version-conflict events.
+
+        type: string
+        required: false
+        maxLength: 500
+
+        example: "Stored version 11 is newer than event version 9."
+
+
+  # ==========================================================
+  # SUCCESS RESPONSE
+  # ==========================================================
+
+  InventoryResponse:
+
+    type: object
+
+    additionalProperties: false
+
+    properties:
+
+      batchId:
+        description: |
+          Identifier of the processed request or batch.
+
+        type: string
+        required: true
+
+        example: "INV-BATCH-2026-09-11-0034"
+
+
+      processedCount:
+        description: Total number of events processed.
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 2
+
+
+      acceptedCount:
+        description: Number of accepted inventory events.
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 1
+
+
+      staleCount:
+        description: Number of stale or out-of-order events ignored.
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 1
+
+
+      rejectedCount:
+        description: Number of rejected inventory events.
+        type: integer
+        required: true
+        minimum: 0
+
+        example: 0
+
+
+      results:
+        description: |
+          Individual processing result for every inventory event.
+
+        type: InventoryResult[]
+
+        required: true
+
+
+      correlationId:
+        description: |
+          Correlation ID used to trace the request.
+
+        type: string
+        required: true
+
+        example: "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64"
+
+
+  # ==========================================================
+  # ERROR RESPONSE
+  # ==========================================================
+
+  ErrorResponse:
+
+    type: object
+
+    additionalProperties: false
+
+    properties:
+
+      success:
+        description: Indicates that the request failed.
+        type: boolean
+        required: true
+
+        example: false
+
+
+      errorCode:
+        description: Machine-readable error code.
+        type: string
+        required: true
+
+        example: "INVALID_INVENTORY_EVENT"
+
+
+      message:
+        description: Human-readable error message.
+        type: string
+        required: true
+
+        example: "Quantity on hand cannot be negative."
+
+
+      details:
+        description: Optional additional error information.
+        type: string
+        required: false
+
+        example: "quantityOnHand=-10"
+
+
+      correlationId:
+        description: Request correlation identifier.
+        type: string
+        required: true
+
+        example: "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64"
+
+
+      timestamp:
+        description: Time at which the error occurred.
+        type: datetime
+        required: true
+
+        example: "2026-09-11T12:40:15+05:30"
+
+
+# ============================================================
+# INVENTORY RESOURCE
+# ============================================================
+
+/inventory:
+
+  /events:
+
+    post:
+
+      displayName: Process Inventory Events
+
+      description: |
+        Receives inventory events from ERP systems,
+        browser applications, Postman and other sources.
+
+        The Process API performs the following processing:
+
+        1. Validate the incoming event.
+        2. Validate SKU and location references.
+        3. Check event version and timestamp.
+        4. Reject stale or duplicate events.
+        5. Handle concurrent updates using optimistic locking.
+        6. Calculate available quantity.
+        7. Update the central inventory database.
+        8. Create an immutable inventory movement audit record.
+        9. Determine low-stock status.
+        10. Publish accepted inventory changes to a queue.
+        11. Allow warehouse and fulfilment systems to consume
+            the change independently.
+        12. Return an individual result for every event.
+
+      is:
+        - correlation
+
+
+      # ======================================================
+      # REQUEST BODY
+      # ======================================================
+
+      body:
+
+        application/json:
+
+          type: InventoryRequest
+
+          example:
+
+            {
+              "sourceSystem": "ERP-SAP-PRD",
+
+              "batchId": "INV-BATCH-2026-09-11-0034",
+
+              "events": [
+
+                {
+                  "eventId": "INV-EVT-77120",
+
+                  "eventVersion": 14,
+
+                  "eventTimestamp": "2026-09-11T12:40:15+05:30",
+
+                  "sku": "SKU-TSHIRT-BLK-M",
+
+                  "locationCode": "WH-CHN-01",
+
+                  "movementType": "GOODS_RECEIPT",
+
+                  "quantityOnHand": 480,
+
+                  "reservedQuantity": 35,
+
+                  "unitOfMeasure": "EA",
+
+                  "referenceDocument": "GRN-2026-55210"
+                },
+
+                {
+                  "eventId": "INV-EVT-77121",
+
+                  "eventVersion": 9,
+
+                  "eventTimestamp": "2026-09-11T12:40:18+05:30",
+
+                  "sku": "SKU-SHOE-BRN-42",
+
+                  "locationCode": "STR-CHN-07",
+
+                  "movementType": "SALE",
+
+                  "quantityOnHand": 12,
+
+                  "reservedQuantity": 2,
+
+                  "unitOfMeasure": "EA",
+
+                  "referenceDocument": "ORD-2026-88121"
+                }
+
+              ]
+            }
+
+
+      # ======================================================
+      # RESPONSES
+      # ======================================================
+
+      responses:
+
+
+        # ====================================================
+        # 200 SUCCESS / PARTIAL SUCCESS
+        # ====================================================
+
+        200:
+
+          description: |
+            Inventory request was processed.
+
+            Individual events may be accepted, ignored as stale,
+            rejected, marked as duplicate, or encounter a
+            version conflict.
+
+          body:
+
+            application/json:
+
+              type: InventoryResponse
+
+              example:
+
+                {
+                  "batchId": "INV-BATCH-2026-09-11-0034",
+
+                  "processedCount": 2,
+
+                  "acceptedCount": 1,
+
+                  "staleCount": 1,
+
+                  "rejectedCount": 0,
+
+                  "results": [
+
+                    {
+                      "eventId": "INV-EVT-77120",
+
+                      "sku": "SKU-TSHIRT-BLK-M",
+
+                      "locationCode": "WH-CHN-01",
+
+                      "outcome": "ACCEPTED",
+
+                      "availableQuantity": 445,
+
+                      "lowStock": false,
+
+                      "publishedTo": [
+                        "warehouse",
+                        "fulfilment"
+                      ]
+                    },
+
+                    {
+                      "eventId": "INV-EVT-77121",
+
+                      "sku": "SKU-SHOE-BRN-42",
+
+                      "locationCode": "STR-CHN-07",
+
+                      "outcome": "IGNORED_STALE",
+
+                      "reason": "Stored version 11 is newer than event version 9."
+                    }
+
+                  ],
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64"
+                }
+
+
+        # ====================================================
+        # 400 BAD REQUEST
+        # ====================================================
+
+        400:
+
+          description: |
+            Invalid or malformed inventory request.
+
+          body:
+
+            application/json:
+
+              type: ErrorResponse
+
+              example:
+
+                {
+                  "success": false,
+
+                  "errorCode": "INVALID_INVENTORY_EVENT",
+
+                  "message": "Required inventory field is missing or invalid.",
+
+                  "details": "sku is required.",
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64",
+
+                  "timestamp":
+                    "2026-09-11T12:40:15+05:30"
+                }
+
+
+        # ====================================================
+        # 404 REFERENCE NOT FOUND
+        # ====================================================
+
+        404:
+
+          description: |
+            SKU or location does not exist or is inactive.
+
+          body:
+
+            application/json:
+
+              type: ErrorResponse
+
+              example:
+
+                {
+                  "success": false,
+
+                  "errorCode": "REFERENCE_NOT_FOUND",
+
+                  "message": "SKU or location does not exist or is inactive.",
+
+                  "details": "SKU=SKU-UNKNOWN, locationCode=WH-CHN-01",
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64",
+
+                  "timestamp":
+                    "2026-09-11T12:40:15+05:30"
+                }
+
+
+        # ====================================================
+        # 409 VERSION CONFLICT
+        # ====================================================
+
+        409:
+
+          description: |
+            Concurrent update detected while applying the
+            inventory change using optimistic locking.
+
+          body:
+
+            application/json:
+
+              type: ErrorResponse
+
+              example:
+
+                {
+                  "success": false,
+
+                  "errorCode": "VERSION_CONFLICT",
+
+                  "message": "Concurrent inventory update detected.",
+
+                  "details": "Inventory was changed by another transaction.",
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64",
+
+                  "timestamp":
+                    "2026-09-11T12:40:15+05:30"
+                }
+
+
+        # ====================================================
+        # 422 BUSINESS VALIDATION ERROR
+        # ====================================================
+
+        422:
+
+          description: |
+            Inventory event violates a business rule.
+
+          body:
+
+            application/json:
+
+              type: ErrorResponse
+
+              example:
+
+                {
+                  "success": false,
+
+                  "errorCode": "NEGATIVE_AVAILABLE_QUANTITY",
+
+                  "message": "Available quantity cannot be negative.",
+
+                  "details": "quantityOnHand=10, reservedQuantity=20",
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64",
+
+                  "timestamp":
+                    "2026-09-11T12:40:15+05:30"
+                }
+
+
+        # ====================================================
+        # 500 INTERNAL SERVER ERROR
+        # ====================================================
+
+        500:
+
+          description: |
+            Unexpected error while processing the inventory event.
+
+          body:
+
+            application/json:
+
+              type: ErrorResponse
+
+              example:
+
+                {
+                  "success": false,
+
+                  "errorCode": "INTERNAL_SERVER_ERROR",
+
+                  "message": "Unexpected inventory processing error.",
+
+                  "correlationId":
+                    "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64",
+
+                  "timestamp":
+                    "2026-09-11T12:40:15+05:30"
+                }

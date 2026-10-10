@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Place in: src/test/munit/inventory-api-test-suite.xml  (tests Team 1 inventory-api.xml, http and apikit mocked) -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+
+    <munit:config name="inventory-api-test-suite.xml" />
+
+    <munit:test name="post-events-success-with-validation-service-mocked" description="POST flow builds SUCCESS response">
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{validCount: 1, rejectedCount: 0}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-1', events: [{eventId: 'E1'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="post:\inventory\events:application\json:inventory-api-config" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('SUCCESS')]" />
+            <munit-tools:assert-that expression="#[payload.batchId]" is="#[MunitTools::equalTo('B-1')]" />
+            <munit-tools:assert-that expression="#[payload.validationResult.validCount]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.correlationId]" is="#[MunitTools::notNullValue()]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="post-events-validation-service-down-returns-503-and-dlq" description="Validation service unreachable -> global handler -> 503 + DLQ">
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="HTTP:CONNECTIVITY" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="vm:publish" />
+            <set-payload value="#[{sourceSystem: 'ERP-TEST', batchId: 'B-2', events: [{eventId: 'E2'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="post:\inventory\events:application\json:inventory-api-config" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(503)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('SERVICE_UNAVAILABLE')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="main-flow-bad-request-handler" description="APIKIT:BAD_REQUEST is handled by the main flow error handler" expectedErrorType="APIKIT:BAD_REQUEST">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:BAD_REQUEST" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="main-flow-not-found-handler" description="APIKIT:NOT_FOUND is handled by the main flow error handler" expectedErrorType="APIKIT:NOT_FOUND">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:NOT_FOUND" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="main-flow-method-not-allowed-handler" description="APIKIT:METHOD_NOT_ALLOWED is handled by the main flow error handler" expectedErrorType="APIKIT:METHOD_NOT_ALLOWED">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:METHOD_NOT_ALLOWED" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="main-flow-not-acceptable-handler" description="APIKIT:NOT_ACCEPTABLE is handled by the main flow error handler" expectedErrorType="APIKIT:NOT_ACCEPTABLE">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:NOT_ACCEPTABLE" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="main-flow-unsupported-media-type-handler" description="APIKIT:UNSUPPORTED_MEDIA_TYPE is handled by the main flow error handler" expectedErrorType="APIKIT:UNSUPPORTED_MEDIA_TYPE">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:UNSUPPORTED_MEDIA_TYPE" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="main-flow-not-implemented-handler" description="APIKIT:NOT_IMPLEMENTED is handled by the main flow error handler" expectedErrorType="APIKIT:NOT_IMPLEMENTED">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:router">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:NOT_IMPLEMENTED" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-main" />
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="console-flow-not-found-handler" description="APIKIT:NOT_FOUND is handled by the console flow error handler" expectedErrorType="APIKIT:NOT_FOUND">
+        <munit:behavior>
+            <munit-tools:mock-when processor="apikit:console">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="APIKIT:NOT_FOUND" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-api-console" />
+        </munit:execution>
+    </munit:test>
+
+</mule>
