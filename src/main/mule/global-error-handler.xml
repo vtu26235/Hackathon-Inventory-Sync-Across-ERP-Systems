@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TEAM 5 - Global error handling, DLQ, logging and metrics.
+  Place in: src/main/mule/global-error-handler.xml
+  Needs: VM module added to the project (Mule Palette > Search in Exchange > VM).
+  Only ONE <configuration> element is allowed per Mule app.
+-->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+
+    <configuration-properties file="error-config.yaml" />
+
+    <!-- Dead Letter Queue (VM). To use Anypoint MQ instead, only change dlq-publish-subflow. -->
+    <vm:config name="VM_Config_DLQ">
+        <vm:queues>
+            <vm:queue queueName="${dlq.queueName}" />
+        </vm:queues>
+    </vm:config>
+
+    <!-- Every flow WITHOUT its own error handler uses this one -->
+    <configuration defaultErrorHandler-ref="global-error-handler" />
+
+    <!-- ================================================================ -->
+    <!-- GLOBAL ERROR HANDLER                                              -->
+    <!-- ================================================================ -->
+    <error-handler name="global-error-handler">
+
+        <!-- 1. Business errors: raised by teammates as INVENTORY:<NAME>. Reject, log WARN, no DLQ. -->
+        <on-error-continue when="#[error.errorType.namespace == 'INVENTORY']"
+                           logException="false" doc:name="On Error Continue - Business">
+            <flow-ref name="classify-error-subflow" doc:name="Classify Error" />
+            <flow-ref name="log-error-subflow" doc:name="Log Error" />
+            <flow-ref name="build-error-response-subflow" doc:name="Build Error Response" />
+        </on-error-continue>
+
+        <!-- 2. Everything else (DB / queue / HTTP / unexpected): log ERROR, send to DLQ, return clean error -->
+        <on-error-continue type="ANY" doc:name="On Error Continue - System and Unexpected">
+            <flow-ref name="classify-error-subflow" doc:name="Classify Error" />
+            <flow-ref name="log-error-subflow" doc:name="Log Error" />
+            <flow-ref name="dlq-publish-subflow" doc:name="Publish To DLQ" />
+            <flow-ref name="build-error-response-subflow" doc:name="Build Error Response" />
+        </on-error-continue>
+
+    </error-handler>
+
+    <!-- ================================================================ -->
+    <!-- classify-error-subflow : decides code / http status / log level   -->
+    <!-- ================================================================ -->
+    <sub-flow name="classify-error-subflow">
+        <ee:transform doc:name="Classify Error">
+            <ee:variables>
+                <ee:set-variable variableName="errorInfo"><![CDATA[%dw 2.0
+output application/java
+var errNamespace = error.errorType.namespace default ""
+var errIdentifier = error.errorType.identifier default ""
+var businessErrors = {
+    INVALID_EVENT: { code: "INVALID_INVENTORY_EVENT", status: 400, message: "Required inventory field is missing or invalid." },
+    UNKNOWN_MOVEMENT: { code: "UNSUPPORTED_MOVEMENT_TYPE", status: 400, message: "Movement type is not supported." },
+    UNKNOWN_REFERENCE: { code: "REFERENCE_NOT_FOUND", status: 404, message: "SKU or location does not exist or is inactive." },
+    VERSION_CONFLICT: { code: "VERSION_CONFLICT", status: 409, message: "Concurrent inventory update detected." },
+    NEGATIVE_AVAILABLE: { code: "NEGATIVE_AVAILABLE_QUANTITY", status: 422, message: "Available quantity cannot be negative." }
+}
+var unavailableIds = ["CONNECTIVITY", "RETRY_EXHAUSTED", "TIMEOUT"]
+var businessDefault = { code: "INVALID_INVENTORY_EVENT", status: 400, message: "Invalid inventory event." }
+var unavailableInfo = { code: "SERVICE_UNAVAILABLE", status: 503, message: "A downstream system is temporarily unavailable. The event was sent for investigation.", level: "ERROR" }
+var unexpectedInfo = { code: "INTERNAL_SERVER_ERROR", status: 500, message: "Unexpected inventory processing error.", level: "ERROR" }
+---
+if (errNamespace == "INVENTORY") ((businessErrors[errIdentifier] default businessDefault) ++ { level: "WARN" }) else (if (unavailableIds contains errIdentifier) unavailableInfo else unexpectedInfo)]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+    </sub-flow>
+
+    <!-- ================================================================ -->
+    <!-- log-error-subflow : one consistent log line (Req 11 / 12)         -->
+    <!-- ================================================================ -->
+    <sub-flow name="log-error-subflow">
+        <choice doc:name="Choice - Level">
+            <when expression="#[vars.errorInfo.level == 'ERROR']">
+                <logger level="ERROR" doc:name="Logger ERROR"
+                        message='#["ERROR | correlationId=$(vars.correlationId default correlationId) | batchId=$(vars.inventoryRequest.batchId default vars.inputdata.batchId default "N/A") | eventId=$(vars.inventoryEvent.eventId default "N/A") | flow=$(flow.name) | errorType=$(error.errorType.namespace):$(error.errorType.identifier) | code=$(vars.errorInfo.code) | description=$(error.description default "")"]' />
+            </when>
+            <otherwise>
+                <logger level="WARN" doc:name="Logger WARN"
+                        message='#["REJECTED | correlationId=$(vars.correlationId default correlationId) | batchId=$(vars.inventoryRequest.batchId default vars.inputdata.batchId default "N/A") | eventId=$(vars.inventoryEvent.eventId default "N/A") | flow=$(flow.name) | errorType=$(error.errorType.namespace):$(error.errorType.identifier) | code=$(vars.errorInfo.code) | description=$(error.description default "")"]' />
+            </otherwise>
+        </choice>
+    </sub-flow>
+
+    <!-- ================================================================ -->
+    <!-- dlq-publish-subflow : original payload + failure reason           -->
+    <!-- ================================================================ -->
+    <sub-flow name="dlq-publish-subflow">
+        <try doc:name="Try - DLQ">
+            <ee:transform doc:name="Build DLQ Message">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    correlationId: vars.correlationId default correlationId,
+    batchId: vars.inventoryRequest.batchId default vars.inputdata.batchId default null,
+    eventId: vars.inventoryEvent.eventId default null,
+    failedFlow: flow.name,
+    errorType: (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""),
+    failureReason: error.description default "",
+    failedAt: now(),
+    originalPayload: vars.inventoryEvent default vars.inputdata default vars.inventoryRequest default null
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <vm:publish config-ref="VM_Config_DLQ" queueName="${dlq.queueName}" doc:name="Publish To DLQ" />
+            <logger level="ERROR" doc:name="Logger DLQ"
+                    message='#["DLQ | correlationId=$(vars.correlationId default correlationId) | eventId=$(vars.inventoryEvent.eventId default "N/A") | event sent to ${dlq.queueName}"]' />
+            <error-handler>
+                <!-- A DLQ failure must never hide the original error -->
+                <on-error-continue doc:name="On Error Continue - DLQ failed">
+                    <logger level="ERROR" doc:name="Logger DLQ failed"
+                            message='#["DLQ_FAILED | correlationId=$(vars.correlationId default correlationId) | reason=$(error.description default "")"]' />
+                </on-error-continue>
+            </error-handler>
+        </try>
+    </sub-flow>
+
+    <!-- ================================================================ -->
+    <!-- build-error-response-subflow : same shape as RAML ErrorResponse   -->
+    <!-- ================================================================ -->
+    <sub-flow name="build-error-response-subflow">
+        <ee:transform doc:name="Build Error Response">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    errorCode: vars.errorInfo.code,
+    message: vars.errorInfo.message,
+    details: if (vars.errorInfo.status >= 500) "See logs for this correlationId" else (error.description default ""),
+    correlationId: vars.correlationId default correlationId,
+    timestamp: now()
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+                <ee:set-variable variableName="httpStatus"><![CDATA[vars.errorInfo.status]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+    </sub-flow>
+
+    <!-- ================================================================ -->
+    <!-- log-batch-metrics-subflow : stale / conflict counts (Req 12)      -->
+    <!-- Call it right before the final response. Reads payload.results.   -->
+    <!-- ================================================================ -->
+    <sub-flow name="log-batch-metrics-subflow">
+        <ee:transform doc:name="Count Outcomes">
+            <ee:variables>
+                <ee:set-variable variableName="batchMetrics"><![CDATA[%dw 2.0
+output application/java
+var results = payload.results default []
+---
+{
+    batchId: payload.batchId default "N/A",
+    processed: sizeOf(results),
+    accepted: sizeOf(results filter ($.outcome == "ACCEPTED")),
+    stale: sizeOf(results filter ($.outcome == "IGNORED_STALE")),
+    duplicate: sizeOf(results filter ($.outcome == "DUPLICATE")),
+    rejected: sizeOf(results filter ($.outcome == "REJECTED")),
+    versionConflict: sizeOf(results filter ($.outcome == "VERSION_CONFLICT"))
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <logger level="INFO" doc:name="Logger METRIC"
+                message='#["METRIC | correlationId=$(vars.correlationId default correlationId) | batchId=$(vars.batchMetrics.batchId) | processed=$(vars.batchMetrics.processed) | accepted=$(vars.batchMetrics.accepted) | stale=$(vars.batchMetrics.stale) | duplicate=$(vars.batchMetrics.duplicate) | rejected=$(vars.batchMetrics.rejected) | versionConflict=$(vars.batchMetrics.versionConflict)"]' />
+        <choice doc:name="Choice - Alert candidate">
+            <when expression="#[vars.batchMetrics.stale &gt; 0 or vars.batchMetrics.versionConflict &gt; 0]">
+                <logger level="WARN" doc:name="Logger ALERT_CANDIDATE"
+                        message='#["ALERT_CANDIDATE | correlationId=$(vars.correlationId default correlationId) | stale=$(vars.batchMetrics.stale) | versionConflict=$(vars.batchMetrics.versionConflict)"]' />
+            </when>
+        </choice>
+    </sub-flow>
+
+</mule>

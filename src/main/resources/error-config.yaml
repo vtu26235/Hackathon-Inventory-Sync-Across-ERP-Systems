@@ -1,0 +1,6 @@
+# Team 5 - externalized properties (put in src/main/resources)
+retry:
+  maxAttempts: "3"
+  delayMs: "2000"
+dlq:
+  queueName: "inventory-dlq"
