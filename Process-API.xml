@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="7786987d-460e-487b-ac7f-540b0054b3c6" >
+		<http:listener-connection host="0.0.0.0" port="8082" />
+	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="af48d2bf-7d7d-49e0-8f90-dc4942df068a" >
+		<db:my-sql-connection host="retail-inventory-db-retail-inventory-sync.h.aivencloud.com" port="20407" user="avnadmin" password="AVNS_b4e3gc4jcx0-no2sMIc" database="defaultdb" />
+	</db:config>
+	<flow name="inventory-processingFlow" doc:id="f8ef5964-1dc1-43dd-9920-c28abee881f8" >
+		<http:listener doc:name="Receive Inventory Event" doc:id="56463fdf-e448-4d30-a545-033ff75b7553" config-ref="HTTP_Listener_config" path="/api/v1/inventory/process"/>
+		<set-variable value="#[payload]" doc:name="Preserve Inventory Event" doc:id="2c6f9d2d-4a19-4f22-bf2a-d0c1e371eb57" variableName="inventoryEvent"/>
+		<db:select doc:name="Check Duplicate Event" doc:id="aca53807-abd5-4cb2-8c9a-543c011dcfcd" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT event_id
+FROM inventory_movements
+WHERE event_id = :eventId
+LIMIT 1]]></db:sql>
+			<db:input-parameters ><![CDATA[#[{
+  eventId: vars.inventoryEvent.event.eventId
+}]]]></db:input-parameters>
+		</db:select>
+		<choice doc:name="Route Duplicate Event" doc:id="b8535d0d-0de0-4715-8b0d-f21e14a7571c" >
+			<when expression="#[!isEmpty(payload)]">
+				<set-payload value='#[{&#10;  status: "IGNORE_DUPLICATE",&#10;  reason: "Event ID has already been processed"&#10;}]' doc:name="Return Duplicate Result" doc:id="0cb41108-3bd7-4525-acf8-8075e1a9dbf5" />
+			</when>
+			<otherwise >
+				<db:select doc:name="Read Current Inventory" doc:id="f6da8d08-e28b-4849-9f68-670dad4c9efa" config-ref="Database_Config">
+					<db:sql ><![CDATA[SELECT
+    sku,
+    location_code,
+    quantity_on_hand,
+    reserved_quantity,
+    available_quantity,
+    event_version,
+    last_event_id,
+    last_event_time,
+    reorder_point,
+    unit_of_measure
+FROM inventory_stock
+WHERE sku = :sku
+  AND location_code = :locationCode
+LIMIT 1]]></db:sql>
+					<db:input-parameters ><![CDATA[#[{
+  sku: vars.inventoryEvent.event.sku,
+  locationCode: vars.inventoryEvent.event.locationCode
+}]]]></db:input-parameters>
+				</db:select>
+				<set-variable value="#[if (isEmpty(payload)) null else payload[0]]" doc:name="Preserve Current Inventory" doc:id="d2983b9d-a2cf-4cde-a6cb-7e975e7201ca" variableName="currentInventory"/>
+				<set-variable value="#[if (vars.currentInventory == null)&#10;    null&#10;  else&#10;    vars.currentInventory.event_version as Number]" doc:name="Preserve Expected Version" doc:id="d8ba4463-91b1-4e8f-9ac3-97d3265c01da" variableName="expectedVersion"/>
+				<choice doc:name="Check Event Version" doc:id="110e981a-112a-4468-b95f-1b85d585236d">
+					<when expression="#[vars.currentInventory != null and&#10;  (vars.inventoryEvent.event.eventVersion as Number)&#10;    &lt;=&#10;  (vars.currentInventory.event_version as Number)]">
+						<set-payload value='#[{&#10;  status: "IGNORE_STALE",&#10;  reason: "Incoming event version is not newer than stored version"&#10;}]' doc:name="Return Stale Event" doc:id="4882329f-45c9-4c2c-b6d3-3da191306420" />
+					</when>
+					<otherwise >
+						<ee:transform doc:name="Calculate Updated Stock" doc:id="239bb9c5-a136-4877-a78c-3fe4569ad4f5" >
+							<ee:message >
+								<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+var event = vars.inventoryEvent.event
+var available = (event.quantityOnHand as Number)
+              - (event.reservedQuantity as Number)
+---
+{
+    sku: event.sku,
+    locationCode: event.locationCode,
+    quantityOnHand: event.quantityOnHand as Number,
+    reservedQuantity: event.reservedQuantity as Number,
+    availableQuantity: available,
+    eventVersion: event.eventVersion as Number,
+    eventId: event.eventId,
+    eventTimestamp: event.eventTimestamp,
+    sourceSystem: vars.inventoryEvent.sourceSystem,
+    unitOfMeasure: event.unitOfMeasure,
+    isValidStock: available >= 0
+}]]></ee:set-payload>
+							</ee:message>
+						</ee:transform>
+						<choice doc:name="Validate Available Stock" doc:id="9beb75c1-6419-4f77-a30a-805d0a57ecc3" >
+							<when expression="#[payload.availableQuantity &lt; 0]">
+								<set-payload value='#[{&#10;    status: "REJECTED",&#10;    reason: "Available stock cannot be negative",&#10;    sku: payload.sku,&#10;    locationCode: payload.locationCode&#10;}]' doc:name="Return Invalid Stock" doc:id="247a3ea9-dc59-40b0-a941-5c292667a7fa" />
+							</when>
+							<otherwise >
+								<set-variable value="#[0]" doc:name="Initialize Conflict Retry Count" doc:id="285bf579-f0f3-4610-b7d8-8020bb9ebd95" variableName="conflictRetryCount"/>
+								<db:update doc:name="Update Inventory With Optimistic Locking." doc:id="60913245-e97b-42f9-b96e-63c56922ba4a" config-ref="Database_Config">
+									<db:sql ><![CDATA[UPDATE inventory_stock
+SET quantity_on_hand = :quantityOnHand,
+    reserved_quantity = :reservedQuantity,
+    available_quantity = :availableQuantity,
+    event_version = :newVersion,
+    last_event_id = :eventId,
+    last_event_time = :eventTimestamp,
+    source_system = :sourceSystem,
+    updated_at = CURRENT_TIMESTAMP
+WHERE sku = :sku
+  AND location_code = :locationCode
+  AND event_version = :expectedVersion;]]></db:sql>
+									<db:input-parameters ><![CDATA[#[{
+    quantityOnHand: payload.quantityOnHand,
+    reservedQuantity: payload.reservedQuantity,
+    availableQuantity: payload.availableQuantity,
+    newVersion: payload.eventVersion,
+    eventId: payload.eventId,
+    eventTimestamp: payload.eventTimestamp,
+    sourceSystem: payload.sourceSystem,
+    sku: payload.sku,
+    locationCode: payload.locationCode,
+    expectedVersion: payload.expectedVersion
+}]]]></db:input-parameters>
+								</db:update>
+								<choice doc:name="Check Update Result" doc:id="3b8c4b6f-7ac4-41d4-92c5-041728e34d93" >
+									<when expression="#[payload.affectedRows == 1]">
+										<set-payload value='#[{&#10;    status: "ACCEPTED",&#10;    message: "Inventory updated successfully"&#10;}]' doc:name="Return Update Success " doc:id="62ac7626-ee46-452c-b3d8-842c254c965c" mimeType="application/json"/>
+									</when>
+									<otherwise>
+										<db:select doc:name="Re-read Inventory After Conflict." doc:id="46a742e2-c560-4713-aeea-cbd86bd4b29e" config-ref="Database_Config">
+											<db:sql ><![CDATA[SELECT sku,
+       location_code,
+       quantity_on_hand,
+       reserved_quantity,
+       available_quantity,
+       event_version,
+       last_event_id,
+       last_event_time,
+       reorder_point,
+       unit_of_measure
+FROM inventory_stock
+WHERE sku = :sku
+  AND location_code = :locationCode
+LIMIT 1;]]></db:sql>
+											<db:input-parameters ><![CDATA[#[{
+    sku: vars.inventoryEvent.event.sku,
+    locationCode: vars.inventoryEvent.event.locationCode
+}]]]></db:input-parameters>
+										</db:select>
+										<set-variable value="#[if (isEmpty(payload)) null else payload[0]]" doc:name="Update Current Inventory After Conflict" doc:id="2f3e773a-9fb8-451e-af91-3e9d44c3b54c" variableName="currentInventory"/>
+										<set-variable value="#[if (vars.currentInventory == null) null else vars.currentInventory.event_version as Number]" doc:name="Update Expected Version After Conflict" doc:id="1d9a088a-32b7-4f89-81a1-4209c7de0214" variableName="expectedVersion"/>
+										<choice doc:name="Recheck Event Version" doc:id="04407674-6b6c-4686-8087-10db6b898689" >
+											<when expression="#[vars.currentInventory != null and&#10;  (vars.inventoryEvent.event.eventVersion as Number) &lt;=&#10;  (vars.currentInventory.event_version as Number)]">
+												<set-payload value='#[{&#10;    status: "IGNORED_STALE",&#10;    eventId: vars.inventoryEvent.event.eventId,&#10;    reason: "Event is no longer newer than stored inventory"&#10;}]' doc:name="Return Stale Event After Conflict." doc:id="68b040a7-acc0-4d5d-8322-da289447e591" />
+											
+</when>
+											<otherwise >
+												<choice doc:name="Check Retry Limit" doc:id="34d18577-1750-45de-85c6-980a73c67d8c" >
+													<when expression="#[vars.conflictRetryCount &gt;= 3]">
+														<set-payload value='#[{&#10;    status: "VERSION_CONFLICT",&#10;    eventId: vars.inventoryEvent.event.eventId,&#10;    reason: "Maximum concurrency retries exceeded"&#10;}]' doc:name="Return Version Conflict" doc:id="261a95a5-eb2a-4792-9a55-e9bfae2f73b3" />
+													</when>
+													<otherwise >
+														<set-variable value="#[((vars.conflictRetryCount default 0) as Number) + 1]" doc:name="Increment Conflict Retry Count" doc:id="a424f2d6-d431-4bd3-9358-47fe1909caac" variableName="conflictRetryCount"/>
+														<ee:transform doc:name="Transform Message" doc:id="283aa03b-8e35-471c-b434-952e90b72f58" >
+															<ee:message >
+																<ee:set-payload ><![CDATA[%dw 2.0
+output application/json      
+var event = vars.inventoryEvent.event
+var onHand = event.quantityOnHand as Number
+var reserved = event.reservedQuantity as Number
+var available = onHand - reserved
+---
+{
+    sku: event.sku,
+    locationCode: event.locationCode,
+    quantityOnHand: onHand,
+    reservedQuantity: reserved,
+    availableQuantity: available,
+    eventId: event.eventId,
+    eventVersion: event.eventVersion as Number,
+    eventTimestamp: event.eventTimestamp,
+    sourceSystem: vars.inventoryEvent.sourceSystem,
+    unitOfMeasure: event.unitOfMeasure,
+    movementType: event.movementType,
+    expectedVersion: vars.expectedVersion,
+    isValidStock:
+        onHand >= 0 and
+        reserved >= 0 and
+        reserved <= onHand
+}]]></ee:set-payload>
+															</ee:message>
+														</ee:transform>
+														<choice doc:name="Validate Recalculated Stock" doc:id="09988fe3-8744-45ea-947f-b555de210e78" >
+															<when expression="#[payload.isValidStock == false]">
+																<set-payload value='#[{&#10;    status: "INVALID_STOCK",&#10;    eventId: vars.inventoryEvent.event.eventId,&#10;    reason: "Recalculated stock is invalid"&#10;}]' doc:name="Invalid Stock After Conflict" doc:id="0a601ef6-c835-4f28-b310-cef6bf342de1" />
+															</when>
+															<otherwise >
+																<set-payload value="#[payload]" doc:name="Prepare Retry Update" doc:id="80e2e846-b6d1-4a5c-a8df-297ae7416f09" />
+															</otherwise>
+														</choice>
+													</otherwise>
+												</choice>
+											</otherwise>
+										</choice>
+									</otherwise>
+								</choice>
+							</otherwise>
+						</choice>
+					</otherwise>
+				</choice>
+			
+</otherwise>
+		</choice>
+	</flow>
+</mule>
