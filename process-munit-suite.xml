@@ -1,0 +1,560 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Place in: src/test/munit/process-munit-suite.xml -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+
+    <munit:config name="process-munit-suite.xml" />
+
+    <!-- ===== helper flows: only raise errors, so the GLOBAL handler is used ===== -->
+    <flow name="test-raise-invalid-no-event">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:INVALID_EVENT" description="sku is required" />
+    </flow>
+    <flow name="test-raise-invalid-with-event">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+        <raise-error type="INVENTORY:INVALID_EVENT" description="sku is required" />
+    </flow>
+    <flow name="test-raise-unknown-reference">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:UNKNOWN_REFERENCE" description="SKU=SKU-X not found" />
+    </flow>
+    <flow name="test-raise-version-conflict">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+        <raise-error type="INVENTORY:VERSION_CONFLICT" description="changed by another transaction" />
+    </flow>
+    <flow name="test-raise-negative-available">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:NEGATIVE_AVAILABLE" description="onHand=10 reserved=20" />
+    </flow>
+    <flow name="test-raise-unknown-movement">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <raise-error type="INVENTORY:UNKNOWN_MOVEMENT" description="movementType=XYZ" />
+    </flow>
+    <flow name="test-raise-stale">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+        <raise-error type="INVENTORY:STALE_EVENT" description="stored version is newer" />
+    </flow>
+    <flow name="test-raise-duplicate">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+        <raise-error type="INVENTORY:DUPLICATE_EVENT" description="event already processed" />
+    </flow>
+    <flow name="test-raise-unexpected">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+        <raise-error type="APP:UNEXPECTED" description="database exploded: secret internal detail" />
+    </flow>
+    <flow name="test-always-failing-with-retry">
+        <set-variable variableName="correlationId" value="TEST-CORR-1" />
+        <until-successful maxRetries="1" millisBetweenRetries="10">
+            <raise-error type="APP:ALWAYS_FAILS" description="db timeout" />
+        </until-successful>
+    </flow>
+
+    <munit:test name="handler-invalid-event-400-no-dlq" description="Business error without event -> 400, no DLQ">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-invalid-no-event" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(400)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INVALID_INVENTORY_EVENT')]" />
+            <munit-tools:assert-that expression="#[payload.valid]" is="#[MunitTools::equalTo(false)]" />
+            <munit-tools:assert-that expression="#[payload.validationStatus]" is="#[MunitTools::equalTo('INVALID')]" />
+            <munit-tools:assert-that expression="#[payload.correlationId]" is="#[MunitTools::equalTo('TEST-CORR-1')]" />
+            <munit-tools:assert-that expression="#[payload.validationReasons[0].message]" is="#[MunitTools::equalTo('sku is required')]" />
+            <munit-tools:verify-call processor="vm:publish" times="0" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-invalid-event-per-event-200" description="Business error on one event -> HTTP 200 with REJECTED status">
+        <munit:execution>
+            <flow-ref name="test-raise-invalid-with-event" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(200)]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('REJECTED')]" />
+            <munit-tools:assert-that expression="#[payload.eventId]" is="#[MunitTools::equalTo('INV-EVT-1')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-unknown-reference-404" description="Unknown SKU or location -> 404">
+        <munit:execution>
+            <flow-ref name="test-raise-unknown-reference" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(404)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('REFERENCE_NOT_FOUND')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-version-conflict-status-conflict" description="Version conflict on an event -> CONFLICT">
+        <munit:execution>
+            <flow-ref name="test-raise-version-conflict" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(200)]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('CONFLICT')]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('VERSION_CONFLICT')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-negative-available-422" description="Negative available quantity -> 422">
+        <munit:execution>
+            <flow-ref name="test-raise-negative-available" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(422)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('NEGATIVE_AVAILABLE_QUANTITY')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-unsupported-movement-400" description="Unknown movement type is rejected">
+        <munit:execution>
+            <flow-ref name="test-raise-unknown-movement" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(400)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('UNSUPPORTED_MOVEMENT_TYPE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-stale-status-stale" description="Stale event -> STALE">
+        <munit:execution>
+            <flow-ref name="test-raise-stale" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(200)]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('STALE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-duplicate-status-duplicate" description="Duplicate event -> DUPLICATE">
+        <munit:execution>
+            <flow-ref name="test-raise-duplicate" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(200)]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('DUPLICATE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-unexpected-500-and-dlq" description="Unexpected error -> 500, DLQ once, detail hidden">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-unexpected" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INTERNAL_SERVER_ERROR')]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('FAILED')]" />
+            <munit-tools:assert-that expression="#[payload.validationReasons[0].message]" is="#[MunitTools::equalTo('See logs for this correlationId')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-retry-exhausted-503-and-dlq" description="Retries used up -> 503, DLQ once">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-always-failing-with-retry" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(503)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('SERVICE_UNAVAILABLE')]" />
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('RETRY_PENDING')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="handler-dlq-failure-keeps-original-error" description="If DLQ publish fails the caller still gets the clean error">
+        <munit:behavior>
+            <munit-tools:mock-when processor="vm:publish">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="VM:CONNECTIVITY" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="test-raise-unexpected" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('INTERNAL_SERVER_ERROR')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="metrics-batch-counts" description="Batch stale and conflict counts">
+        <munit:behavior>
+            <set-variable variableName="correlationId" value="TEST-CORR-1" />
+            <set-payload value="#[{batchId: 'B-1', results: [{status: 'ACCEPTED'}, {status: 'STALE'}, {status: 'IGNORE_STALE'}, {status: 'CONFLICT'}, {status: 'REJECTED'}, {status: 'DUPLICATE'}]}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="log-batch-metrics-subflow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.batchMetrics.processed]" is="#[MunitTools::equalTo(6)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.accepted]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.stale]" is="#[MunitTools::equalTo(2)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.versionConflict]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.rejected]" is="#[MunitTools::equalTo(1)]" />
+            <munit-tools:assert-that expression="#[vars.batchMetrics.duplicate]" is="#[MunitTools::equalTo(1)]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="metrics-event-stale-is-flagged" description="Stale outcome is flagged for alerting">
+        <munit:behavior>
+            <set-variable variableName="inventoryEvent" value="#[{event: {eventId: 'INV-EVT-1', sku: 'SKU-A', locationCode: 'WH-1'}}]" />
+            <set-payload value="#[{status: 'IGNORE_STALE'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="log-event-outcome-subflow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isStale]" is="#[MunitTools::equalTo(true)]" />
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isConflict]" is="#[MunitTools::equalTo(false)]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="metrics-event-conflict-is-flagged" description="Conflict outcome is flagged for alerting">
+        <munit:behavior>
+            <set-payload value="#[{status: 'VERSION_CONFLICT'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="log-event-outcome-subflow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isConflict]" is="#[MunitTools::equalTo(true)]" />
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isStale]" is="#[MunitTools::equalTo(false)]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="metrics-event-accepted-no-alert" description="Accepted outcome is not an alert">
+        <munit:behavior>
+            <set-payload value="#[{status: 'ACCEPTED'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="log-event-outcome-subflow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isStale]" is="#[MunitTools::equalTo(false)]" />
+            <munit-tools:assert-that expression="#[vars.eventOutcome.isConflict]" is="#[MunitTools::equalTo(false)]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="dlq-inspector-logs-message" description="DLQ inspector flow processes a dead letter">
+        <munit:behavior>
+            <set-payload value="#[{eventId: 'E1', failureReason: 'db down'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="dlq-inspector-flow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.eventId]" is="#[MunitTools::equalTo('E1')]" />
+        </munit:validation>
+    </munit:test>
+
+    <!-- ===== project specific tests ===== -->
+    <munit:test name="proc-duplicate-event-ignored" description="Event ID already processed">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{event_id: 'E1'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('IGNORE_DUPLICATE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-stale-event-ignored" description="Older version is ignored">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 20, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('IGNORE_STALE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-new-stock-row-accepted" description="No stock row yet, update accepted">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{affectedRows: 1}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('ACCEPTED')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-newer-event-accepted" description="Newer version updates stock">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 11, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{affectedRows: 1}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('ACCEPTED')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-negative-available-rejected" description="Available quantity below zero is rejected">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 1, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 5, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('REJECTED')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-conflict-then-stale" description="Update conflict, re-read shows newer stored version">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 11, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{affectedRows: 0}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Re-read Inventory After Conflict." />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 20, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('IGNORED_STALE')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-conflict-then-retry-payload" description="Update conflict, event still newer, retry data prepared">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 11, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{affectedRows: 0}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Re-read Inventory After Conflict." />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 10, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.expectedVersion]" is="#[MunitTools::equalTo(10)]" />
+            <munit-tools:assert-that expression="#[vars.conflictRetryCount]" is="#[MunitTools::equalTo(1)]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-conflict-then-invalid-stock" description="Update conflict, recalculated stock invalid">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Check Duplicate Event" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Read Current Inventory" />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 11, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{affectedRows: 0}]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name" whereValue="Re-read Inventory After Conflict." />
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[{sku: 'SKU-A', location_code: 'WH-1', quantity_on_hand: 50, reserved_quantity: 5, available_quantity: 45, event_version: 10, reorder_point: 10, unit_of_measure: 'EA'}]]" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 5, reservedQuantity: -1, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('INVALID_STOCK')]" />
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="proc-database-down-503-and-dlq" description="Database unreachable -> 503 and DLQ">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="DB:CONNECTIVITY" />
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="vm:publish" />
+            <set-payload value="#[{event: {eventId: 'E1', eventVersion: 14, eventTimestamp: '2026-09-11T12:40:15+05:30', sku: 'SKU-A', locationCode: 'WH-1', movementType: 'SALE', quantityOnHand: 100, reservedQuantity: 10, unitOfMeasure: 'EA'}, sourceSystem: 'ERP-TEST'}]" />
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="inventory-processingFlow" />
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(503)]" />
+            <munit-tools:assert-that expression="#[payload.errorCode]" is="#[MunitTools::equalTo('SERVICE_UNAVAILABLE')]" />
+            <munit-tools:verify-call processor="vm:publish" times="1" />
+        </munit:validation>
+    </munit:test>
+
+</mule>
