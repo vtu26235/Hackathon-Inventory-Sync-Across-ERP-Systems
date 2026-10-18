@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inventory Sync Console</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#1b1f24;--mut:#667085;--line:#e3e6ea;--pri:#1a56db;--ok:#067647;--okbg:#e7f6ee;--bad:#b42318;--badbg:#fdecea;--warn:#92400e;--warnbg:#fef3c7;--code:#f1f3f5}
+@media(prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1d2127;--ink:#eceff3;--mut:#9aa4b2;--line:#2f353d;--pri:#6b9bff;--okbg:#12301f;--ok:#5ad08f;--bad:#ff8a80;--badbg:#3a1a17;--warn:#fbbf24;--warnbg:#3a2d10;--code:#12151a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 60px}h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
+input,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+.line{border:1px dashed var(--line);border-radius:8px;padding:12px;margin-top:12px}.line h3{margin:0 0 8px;font-size:13px;color:var(--mut);display:flex;justify-content:space-between}
+button{font:inherit;border:0;border-radius:6px;padding:9px 16px;cursor:pointer}.pri{background:var(--pri);color:#fff}.pri:disabled{opacity:.6}.sec{background:transparent;border:1px solid var(--line);color:var(--ink)}.lnk{background:none;color:var(--bad);padding:0}
+.row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.banner{padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:14px}.ok{background:var(--okbg);color:var(--ok)}.bad{background:var(--badbg);color:var(--bad)}.warn{background:var(--warnbg);color:var(--warn)}
+#invoice{display:none}.invhead{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:12px}
+h3.sec-t{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);margin:18px 0 8px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mut);font-weight:600;white-space:nowrap}td.n,th.n{text-align:right}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}.t-ACCEPTED{background:var(--okbg);color:var(--ok)}.t-REJECTED,.t-FAILED,.t-CONFLICT{background:var(--badbg);color:var(--bad)}.t-IGNORED_STALE,.t-IGNORED_DUPLICATE,.t-RETRY_PENDING,.t-LOW{background:var(--warnbg);color:var(--warn)}
+.sum{display:flex;gap:16px;flex-wrap:wrap;color:var(--mut);font-size:13px}.sum b{color:var(--ink)}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px;margin:0;overflow:auto;max-height:420px;font:12.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px}.ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:13px;color:var(--mut)}.ph button{padding:3px 10px;font-size:12px}
+.hint{font-size:11px;color:var(--mut);margin-top:2px}
+@media print{body{background:#fff;color:#000}.card:not(#invoice),.row,.banner{display:none}#invoice{border:0}}
+</style></head><body><main>
+<h1>Inventory Sync Console</h1><p class="sub">Submit stock events to your Mule Experience API, see the invoice with the full request and response, and get it by email.</p>
+
+<form id="f" class="card">
+  <div class="grid">
+    <div><label>Source system</label><input id="src" value="ERP-SAP-PRD" required></div>
+    <div><label>Batch ID</label><input id="bid" required></div>
+    <div><label>Extra email for invoice (optional)</label><input id="mail" type="email" placeholder="customer@example.com"></div>
+  </div>
+  <div id="lines"></div>
+  <div class="row"><button type="button" class="sec" id="add">+ Add event</button><button class="pri" id="go">Submit &amp; generate invoice</button></div>
+</form>
+<div id="msg"></div>
+
+<section id="invoice" class="card">
+  <div class="invhead"><div><h2 style="margin:0">Inventory Update Invoice</h2><div id="invno" style="color:var(--mut)"></div></div>
+  <div style="text-align:right;color:var(--mut);font-size:13px"><div id="invdate"></div><div id="invmeta"></div></div></div>
+
+  <h3 class="sec-t">Batch</h3>
+  <table><tbody id="batch"></tbody></table>
+
+  <h3 class="sec-t">Events: request details and result</h3>
+  <div style="overflow-x:auto"><table><thead><tr><th>Event ID</th><th>SKU</th><th>Location</th><th>Type</th><th class="n">Version</th><th>Event timestamp</th><th class="n">On hand</th><th class="n">Reserved</th><th class="n">Available</th><th>UoM</th><th>Reference doc</th><th>Outcome</th><th>Reason</th><th>Published to</th></tr></thead><tbody id="tb"></tbody></table></div>
+
+  <h3 class="sec-t">Totals</h3>
+  <div class="sum" id="sum"></div>
+
+  <h3 class="sec-t">Raw request and response (same as Postman)</h3>
+  <div class="two">
+    <div><div class="ph"><span>Request sent: POST /api/v1/inventory/events</span><button class="sec" data-copy="reqpre">Copy</button></div><pre id="reqpre"></pre></div>
+    <div><div class="ph"><span id="resphead">Response</span><button class="sec" data-copy="resppre">Copy</button></div><pre id="resppre"></pre></div>
+  </div>
+
+  <div id="mailst" style="margin-top:16px"></div>
+  <div class="row"><button class="sec" onclick="window.print()">Print invoice</button><button class="sec" id="resend">Resend email</button></div>
+</section>
+
+<script>
+const $=id=>document.getElementById(id);let n=0,last=null;
+const uid=()=>Math.random().toString(36).slice(2,8).toUpperCase();
+const MOVES=["GOODS_RECEIPT","SALE","RETURN","TRANSFER","ADJUSTMENT"],UNITS=["EA","PCS","KG","G","L","ML","BOX","CASE"];
+const opt=a=>a.map(x=>`<option>${x}</option>`).join('');
+const h=s=>String(s??'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+function addLine(d={}){n++;const el=document.createElement('div');el.className='line';
+ el.innerHTML=`<h3><span>Event ${n}</span><button type="button" class="lnk" onclick="this.closest('.line').remove()">remove</button></h3><div class="grid">
+ <div><label>Event ID</label><input data-k="eventId" value="INV-EVT-${uid()}" required></div>
+ <div><label>SKU</label><input data-k="sku" value="${d.sku||'SKU-TSHIRT-BLK-M'}" required></div>
+ <div><label>Location code</label><input data-k="locationCode" value="${d.loc||'WH-CHN-01'}" required></div>
+ <div><label>Movement type</label><select data-k="movementType">${opt(MOVES)}</select></div>
+ <div><label>Quantity on hand</label><input data-k="quantityOnHand" type="number" min="0" step="1" value="${d.q??480}" required></div>
+ <div><label>Reserved quantity</label><input data-k="reservedQuantity" type="number" min="0" step="1" value="${d.r??35}" required></div>
+ <div><label>Event version</label><input data-k="eventVersion" type="number" min="1" step="1" value="${d.v??14}" required><div class="hint">Must be higher than the stored version, otherwise IGNORED_STALE</div></div>
+ <div><label>Unit of measure</label><select data-k="unitOfMeasure">${opt(UNITS)}</select></div>
+ <div><label>Event timestamp (ISO 8601 with Z or +hh:mm)</label><input data-k="eventTimestamp" value="${d.ts||new Date().toISOString()}" required></div>
+ <div><label>Reference document</label><input data-k="referenceDocument" value="${d.ref||'GRN-2026-'+Math.floor(10000+Math.random()*89999)}"></div></div>`;
+ el.querySelector('[data-k=movementType]').value=d.mv||'GOODS_RECEIPT';
+ $('lines').appendChild(el)}
+$('add').onclick=()=>addLine({sku:'SKU-SHOE-BRN-42',loc:'STR-CHN-07',mv:'SALE',q:12,r:2,v:9,ref:'POS-2026-'+Math.floor(100000+Math.random()*899999)});
+addLine();addLine({sku:'SKU-SHOE-BRN-42',loc:'STR-CHN-07',mv:'SALE',q:12,r:2,v:9,ref:'POS-2026-881043'});
+$('bid').value='INV-BATCH-'+new Date().toISOString().slice(0,10)+'-'+uid();
+const banner=(t,c)=>$('msg').innerHTML=t?`<div class="banner ${c}">${t}</div>`:'';
+function reset(){$('go').disabled=false;$('go').textContent='Submit & generate invoice'}
+
+$('f').onsubmit=async e=>{e.preventDefault();banner('');$('go').disabled=true;$('go').textContent='Submitting...';
+ const events=[...document.querySelectorAll('.line')].map(l=>{const o={};l.querySelectorAll('[data-k]').forEach(i=>{
+   const k=i.dataset.k;if(i.type==='number')o[k]=i.value===''?null:Number(i.value);else if(k==='referenceDocument'&&i.value==='')return;else o[k]=i.value});return o});
+ if(!events.length){banner('Add at least one event.','bad');return reset()}
+ const cid='web-'+uid()+uid();
+ const payload={sourceSystem:$('src').value,batchId:$('bid').value,events};
+ try{
+  const r=await fetch('/api/v1/inventory/events',{method:'POST',headers:{'Content-Type':'application/json','X-Correlation-ID':cid},body:JSON.stringify(payload)});
+  const t=await r.text();let d;try{d=JSON.parse(t)}catch{d=null}
+  if(!d){banner('Server error ('+r.status+'): '+h(t||'empty response'),'bad');return reset()}
+  if(!d.results){banner(`<b>HTTP ${r.status} ${h(d.errorCode||d.error||'Request rejected')}</b>: ${h(d.message||d.reason||'')} <pre style="margin-top:8px">${h(JSON.stringify(d,null,2))}</pre>`,'bad');return reset()}
+  show(payload,d,cid,r.status);
+ }catch(x){banner('Cannot reach the server: '+h(x.message),'bad')}reset()};
+
+function show(p,d,cid,status){
+ const res=d.results||[];
+ const lines=p.events.map((e,i)=>{const x=res[i]||{};return{eventId:e.eventId,eventVersion:e.eventVersion,eventTimestamp:e.eventTimestamp,sku:e.sku,locationCode:e.locationCode,
+  movementType:e.movementType,quantityOnHand:e.quantityOnHand,reservedQuantity:e.reservedQuantity,unitOfMeasure:e.unitOfMeasure,referenceDocument:e.referenceDocument,
+  availableQuantity:x.availableQuantity,outcome:x.outcome||'UNKNOWN',reasonCode:x.reasonCode,reason:x.reason,lowStock:x.lowStock,publishedTo:x.publishedTo||[]}});
+ const now=new Date();
+ const counts={processed:d.processedCount??res.length,accepted:d.acceptedCount??0,stale:d.staleCount??0,rejected:d.rejectedCount??0,duplicate:d.duplicateCount??0,conflict:d.conflictCount??0,retryPending:d.retryPendingCount??0,failed:d.failedCount??0};
+ last={invoiceNo:'INV-'+now.toISOString().slice(0,10).replace(/-/g,'')+'-'+uid(),date:now.toLocaleString(),sourceSystem:p.sourceSystem,batchId:p.batchId,
+  correlationId:d.correlationId||cid,httpStatus:status,customerEmail:$('mail').value.trim(),counts,lines,
+  requestJson:JSON.stringify(p,null,2),responseJson:JSON.stringify(d,null,2)};
+ $('invno').textContent=last.invoiceNo;$('invdate').textContent=last.date;$('invmeta').textContent='HTTP '+status;
+ $('batch').innerHTML=[['Source system',last.sourceSystem],['Batch ID',last.batchId],['Correlation ID',last.correlationId],['Events submitted',p.events.length]].map(([a,b])=>`<tr><th style="width:180px">${a}</th><td>${h(b)}</td></tr>`).join('');
+ $('tb').innerHTML=lines.map(l=>`<tr><td>${h(l.eventId)}</td><td>${h(l.sku)}</td><td>${h(l.locationCode)}</td><td>${h(l.movementType)}</td>
+  <td class="n">${h(l.eventVersion)}</td><td>${h(l.eventTimestamp)}</td><td class="n">${h(l.quantityOnHand)}</td><td class="n">${h(l.reservedQuantity)}</td>
+  <td class="n">${h(l.availableQuantity??'-')}</td><td>${h(l.unitOfMeasure)}</td><td>${h(l.referenceDocument||'')}</td>
+  <td><span class="tag t-${h(l.outcome)}">${h(l.outcome)}</span>${l.lowStock?' <span class="tag t-LOW">LOW STOCK</span>':''}</td>
+  <td>${h(l.reasonCode||'')}${l.reason?': '+h(l.reason):''}</td><td>${h((l.publishedTo||[]).join(', ')||'-')}</td></tr>`).join('');
+ const lab={processed:'Processed',accepted:'Accepted',stale:'Stale',rejected:'Rejected',duplicate:'Duplicate',conflict:'Conflict',retryPending:'Retry pending',failed:'Failed'};
+ $('sum').innerHTML=Object.keys(lab).map(k=>`<span>${lab[k]} <b>${counts[k]}</b></span>`).join('');
+ $('reqpre').textContent=last.requestJson;$('resppre').textContent=last.responseJson;$('resphead').textContent='Response: HTTP '+status;
+ $('invoice').style.display='block';$('invoice').scrollIntoView({behavior:'smooth'});mailIt()}
+
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard.writeText($(b.dataset.copy).textContent);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1200)});
+
+async function mailIt(){const s=$('mailst');s.innerHTML='<div class="banner warn">Sending email...</div>';
+ try{const r=await fetch('/notify/invoice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(last)});const d=await r.json();
+  s.innerHTML=d.sent?`<div class="banner ok">Invoice emailed to ${h((d.to||[]).join(', '))}</div>`:`<div class="banner bad">Email not sent: ${h(d.error)}</div>`}
+ catch(x){s.innerHTML=`<div class="banner bad">Email not sent: ${h(x.message)}</div>`}}
+$('resend').onclick=mailIt;
+</script></main></body></html>
