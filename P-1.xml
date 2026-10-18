@@ -1,0 +1,757 @@
+<mule xmlns:tls="http://www.mulesoft.org/schema/mule/tls" xmlns:email="http://www.mulesoft.org/schema/mule/email" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd ">
+<configuration-properties file="config.properties" doc:name="Configuration properties"/>
+<http:listener-config name="Retail-Inventory-Sync-API-httpListenerConfig">
+<http:listener-connection host="0.0.0.0" port="8081"/>
+</http:listener-config>
+<apikit:config name="Retail-Inventory-Sync-API-config" api="api/inventory-validation.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus"/>
+<!--    ===================== MAIN FLOW =====================    -->
+<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="daa09dcd-dceb-4d65-914f-1e08ce8b8887">
+<http:listener-connection host="0.0.0.0" port="8082"/>
+</http:listener-config>
+<flow name="Retail-Inventory-Sync-API-main">
+<http:listener config-ref="Retail-Inventory-Sync-API-httpListenerConfig" path="/api/v1/*">
+<http:response statusCode="#[vars.httpStatus default 200]">
+<http:headers>
+<![CDATA[  #[{
+    "X-Correlation-ID": vars.correlationId
+}]  ]]>
+</http:headers>
+</http:response>
+<http:error-response statusCode="#[vars.httpStatus default 500]">
+<http:body>#[payload]</http:body>
+<http:headers>#[vars.outboundHeaders default {}]</http:headers>
+</http:error-response>
+</http:listener>
+<set-variable variableName="correlationId" value="#[attributes.headers.'x-correlation-id' default uuid()]" doc:name="Set Correlation ID"/>
+<logger level="INFO" doc:name="Log Request Received" message="#['REQUEST RECEIVED correlationId=' ++ vars.correlationId ++ ' method=' ++ attributes.method ++ ' path=' ++ attributes.requestPath]"/>
+<apikit:router config-ref="Retail-Inventory-Sync-API-config"/>
+<error-handler>
+<on-error-propagate type="APIKIT:BAD_REQUEST" doc:name="APIKIT BAD_REQUEST">
+<logger level="WARN" message="#['BAD REQUEST correlationId=' ++ vars.correlationId ++ ' reason=' ++ (error.description default 'n/a')]"/>
+<ee:transform doc:name="Build 400 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "INVALID_REQUEST",
+    errorCode: "APIKIT_BAD_REQUEST",
+    message: "Request validation failed.",
+    correlationId: vars.correlationId,
+    validationReasons: [{
+        code: "REQUEST_INVALID",
+        message: error.description default "Bad request",
+        category: "INPUT",
+        retryable: false
+    }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   400   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<on-error-propagate type="APIKIT:NOT_FOUND" doc:name="APIKIT NOT_FOUND">
+<ee:transform doc:name="Build 404 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "NOT_FOUND",
+    errorCode: "APIKIT_NOT_FOUND",
+    message: "Resource not found",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "RESOURCE_NOT_FOUND", message: "Resource not found", category: "INPUT", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   404   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<on-error-propagate type="APIKIT:METHOD_NOT_ALLOWED" doc:name="APIKIT METHOD_NOT_ALLOWED">
+<ee:transform doc:name="Build 405 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "METHOD_NOT_ALLOWED",
+    errorCode: "APIKIT_METHOD_NOT_ALLOWED",
+    message: "Method not allowed",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "METHOD_NOT_ALLOWED", message: "Method not allowed", category: "INPUT", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   405   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<on-error-propagate type="APIKIT:NOT_ACCEPTABLE" doc:name="APIKIT NOT_ACCEPTABLE">
+<ee:transform doc:name="Build 406 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "NOT_ACCEPTABLE",
+    errorCode: "APIKIT_NOT_ACCEPTABLE",
+    message: "Not acceptable",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "NOT_ACCEPTABLE", message: "Not acceptable", category: "INPUT", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   406   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<on-error-propagate type="APIKIT:UNSUPPORTED_MEDIA_TYPE" doc:name="APIKIT UNSUPPORTED_MEDIA_TYPE">
+<ee:transform doc:name="Build 415 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "UNSUPPORTED_MEDIA_TYPE",
+    errorCode: "APIKIT_UNSUPPORTED_MEDIA_TYPE",
+    message: "Unsupported media type. Use application/json.",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "UNSUPPORTED_MEDIA_TYPE", message: "Content-Type must be application/json", field: "Content-Type", category: "INPUT", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   415   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<on-error-propagate type="APIKIT:NOT_IMPLEMENTED" doc:name="APIKIT NOT_IMPLEMENTED">
+<ee:transform doc:name="Build 501 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "NOT_IMPLEMENTED",
+    errorCode: "APIKIT_NOT_IMPLEMENTED",
+    message: "Not implemented",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "NOT_IMPLEMENTED", message: "Not implemented", category: "TECHNICAL", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   501   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<!--    Process API unreachable or too slow: dependency unavailable    -->
+<on-error-propagate type="HTTP:CONNECTIVITY, HTTP:TIMEOUT" doc:name="Process API unavailable">
+<logger level="ERROR" message="#['PROCESS API UNAVAILABLE correlationId=' ++ vars.correlationId ++ ' error=' ++ (error.description default 'n/a')]"/>
+<ee:transform doc:name="Build 503 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "SERVICE_UNAVAILABLE",
+    errorCode: "PROCESS_API_UNAVAILABLE",
+    message: "A required service is temporarily unavailable. Please retry.",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "DEPENDENCY_UNAVAILABLE", message: "Process API is not reachable or timed out", category: "TECHNICAL", retryable: true }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   503   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+<!--    Anything else: keep this LAST    -->
+<on-error-propagate type="ANY" doc:name="Unexpected error">
+<logger level="ERROR" message="#['UNEXPECTED ERROR correlationId=' ++ vars.correlationId ++ ' type=' ++ (error.errorType.namespace default '') ++ ':' ++ (error.errorType.identifier default '') ++ ' description=' ++ (error.description default 'n/a')]"/>
+<ee:transform doc:name="Build 500 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "INTERNAL_ERROR",
+    errorCode: "UNEXPECTED_ERROR",
+    message: "An unexpected error occurred. Quote the correlationId when reporting it.",
+    correlationId: vars.correlationId,
+    validationReasons: [{ code: "UNEXPECTED_ERROR", message: "Unexpected processing failure", category: "TECHNICAL", retryable: false }]
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   500   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+</error-handler>
+</flow>
+<!--    ===================== CONSOLE FLOW (unchanged) =====================    -->
+<flow name="Retail-Inventory-Sync-API-console">
+<http:listener config-ref="HTTP_Listener_config" path="/console/*">
+<http:response statusCode="#[vars.httpStatus default 200]">
+<http:headers>
+<![CDATA[ #[vars.outboundHeaders default {}] ]]>
+</http:headers>
+</http:response>
+<http:error-response statusCode="#[vars.httpStatus default 500]">
+<http:body>
+<![CDATA[ #[payload] ]]>
+</http:body>
+<http:headers>
+<![CDATA[ #[vars.outboundHeaders default {}] ]]>
+</http:headers>
+</http:error-response>
+</http:listener>
+<apikit:console config-ref="Retail-Inventory-Sync-API-config"/>
+<error-handler>
+<on-error-propagate type="APIKIT:NOT_FOUND">
+<ee:transform doc:name="Transform Message">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{message: "Resource not found"}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">404</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-propagate>
+</error-handler>
+</flow>
+<!--    ===================== POST /inventory/events =====================    -->
+<flow name="post:\inventory\events:application\json:Retail-Inventory-Sync-API-config">
+<!--    1. Validate the batch and every event separately    -->
+<ee:transform doc:name="Validate Events (per event)">
+<ee:variables>
+<ee:set-variable variableName="validation">
+<![CDATA[   %dw 2.0
+output application/java
+import try from dw::Runtime
+
+// ---------- Rules taken from the PDF / database column sizes ----------
+var MOVEMENTS = ["GOODS_RECEIPT", "SALE", "RETURN", "TRANSFER", "ADJUSTMENT"]
+var UNITS = ["EA", "PCS", "KG", "G", "L", "ML", "BOX", "CASE"]
+var ALLOWED_FIELDS = [
+    "eventId", "eventVersion", "eventTimestamp", "sku", "locationCode",
+    "movementType", "quantityOnHand", "reservedQuantity",
+    "unitOfMeasure", "referenceDocument"
+]
+// ISO 8601 date-time. The timezone (Z or +hh:mm) is REQUIRED.
+var TS_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+var MAX_INT = 2147483647
+var MAX_BATCH = 100
+
+// ---------- Helpers ----------
+fun err(code, field, message) = {
+    code: code,
+    field: field,
+    message: message,
+    category: "INPUT",
+    retryable: false
+}
+
+fun textCheck(obj, field, maxLen) = do {
+    var v = obj[field]
+    ---
+    if (v == null)
+        [err("MISSING_FIELD", field, field ++ " is missing or null")]
+    else if (!(v is String))
+        [err("INVALID_TYPE", field, field ++ " must be a string")]
+    else if (isEmpty(trim(v)))
+        [err("BLANK_FIELD", field, field ++ " must not be blank")]
+    else if (sizeOf(v) > maxLen)
+        [err("FIELD_TOO_LONG", field, field ++ " must not exceed " ++ (maxLen as String) ++ " characters")]
+    else
+        []
+}
+
+fun qtyCheck(obj, field) = do {
+    var v = obj[field]
+    ---
+    if (v == null)
+        [err("MISSING_FIELD", field, field ++ " is missing or null")]
+    else if (!(v is Number))
+        [err("INVALID_TYPE", field, field ++ " must be a number")]
+    else if (v != floor(v))
+        [err("INVALID_QUANTITY", field, field ++ " must be a whole number")]
+    else if (v < 0)
+        [err("NEGATIVE_QUANTITY", field, field ++ " must not be negative")]
+    else if (v > MAX_INT)
+        [err("QUANTITY_OVERFLOW", field, field ++ " is too large")]
+    else
+        []
+}
+
+fun versionCheck(e) = do {
+    var v = e.eventVersion
+    ---
+    if (v == null)
+        [err("MISSING_FIELD", "eventVersion", "eventVersion is missing or null")]
+    else if (!(v is Number))
+        [err("INVALID_TYPE", "eventVersion", "eventVersion must be a number")]
+    else if (v != floor(v) or v <= 0)
+        [err("INVALID_EVENT_VERSION", "eventVersion", "eventVersion must be a whole number greater than zero")]
+    else
+        []
+}
+
+fun timestampCheck(e) = do {
+    var v = e.eventTimestamp
+    ---
+    if (v == null)
+        [err("MISSING_FIELD", "eventTimestamp", "eventTimestamp is missing or null")]
+    else if (!(v is String))
+        [err("INVALID_TYPE", "eventTimestamp", "eventTimestamp must be a string")]
+    else if (!(v matches TS_PATTERN))
+        [err("INVALID_TIMESTAMP", "eventTimestamp", "eventTimestamp must be ISO 8601 with a timezone offset or Z")]
+    else if (!(try(() -> v as DateTime).success))
+        [err("INVALID_TIMESTAMP", "eventTimestamp", "eventTimestamp is not a real calendar date and time")]
+    else
+        []
+}
+
+fun movementCheck(e) = do {
+    var base = textCheck(e, "movementType", 25)
+    ---
+    if (!isEmpty(base))
+        base
+    else if (!(MOVEMENTS contains e.movementType))
+        [err("UNSUPPORTED_MOVEMENT_TYPE", "movementType", "movementType is unsupported: " ++ e.movementType)]
+    else
+        []
+}
+
+fun uomCheck(e) = do {
+    var base = textCheck(e, "unitOfMeasure", 10)
+    ---
+    if (!isEmpty(base))
+        base
+    else if (!(UNITS contains e.unitOfMeasure))
+        [err("UNSUPPORTED_UOM", "unitOfMeasure", "unitOfMeasure is unsupported: " ++ e.unitOfMeasure)]
+    else
+        []
+}
+
+fun reservedCheck(e) =
+    if (
+        (e.quantityOnHand is Number) and (e.reservedQuantity is Number)
+        and (e.quantityOnHand >= 0)
+        and (e.reservedQuantity > e.quantityOnHand)
+    )
+        [err("RESERVED_EXCEEDS_ONHAND", "reservedQuantity", "reservedQuantity must not exceed quantityOnHand")]
+    else
+        []
+
+// referenceDocument is optional, but if it is sent it must be valid.
+fun refCheck(e) = do {
+    var v = e.referenceDocument default null
+    ---
+    if (v == null)
+        []
+    else if (!(v is String))
+        [err("INVALID_TYPE", "referenceDocument", "referenceDocument must be a string")]
+    else if (isEmpty(trim(v)))
+        [err("BLANK_FIELD", "referenceDocument", "referenceDocument must not be blank")]
+    else if (sizeOf(v) > 40)
+        [err("FIELD_TOO_LONG", "referenceDocument", "referenceDocument must not exceed 40 characters")]
+    else
+        []
+}
+
+fun unknownFieldCheck(e) =
+    (keysOf(e) map ((k) -> k as String))
+        filter ((k) -> !(ALLOWED_FIELDS contains k))
+        map ((k) -> err("UNKNOWN_FIELD", k, k ++ " is not a supported field"))
+
+fun eventErrors(e) =
+    if (!(e is Object))
+        [err("INVALID_EVENT", "event", "Each event must be a JSON object")]
+    else
+        textCheck(e, "eventId", 30)
+        ++ versionCheck(e)
+        ++ timestampCheck(e)
+        ++ textCheck(e, "sku", 40)
+        ++ textCheck(e, "locationCode", 20)
+        ++ movementCheck(e)
+        ++ qtyCheck(e, "quantityOnHand")
+        ++ qtyCheck(e, "reservedQuantity")
+        ++ reservedCheck(e)
+        ++ uomCheck(e)
+        ++ refCheck(e)
+        ++ unknownFieldCheck(e)
+
+// ---------- Request-level checks ----------
+var req = if (payload is Object) payload else {}
+var hasEvent = req.event != null
+var hasEvents = req.events != null
+var rawEvents =
+    if (req.events is Array) req.events
+    else if (hasEvent) [req.event]
+    else []
+
+var batchErrors =
+    textCheck(req, "sourceSystem", 30)
+    ++ textCheck(req, "batchId", 100)
+    ++ (
+        if (hasEvent and hasEvents)
+            [err("BOTH_EVENT_AND_EVENTS", "events", "Send either event or events, not both")]
+        else if (!hasEvent and !hasEvents)
+            [err("MISSING_EVENTS", "events", "Either event or events is required")]
+        else if (hasEvents and !(req.events is Array))
+            [err("INVALID_TYPE", "events", "events must be an array")]
+        else if (hasEvents and isEmpty(req.events))
+            [err("EMPTY_EVENTS", "events", "events must contain at least one event")]
+        else if (sizeOf(rawEvents) > MAX_BATCH)
+            [err("BATCH_TOO_LARGE", "events", "A batch may contain at most 100 events")]
+        else
+            []
+    )
+
+// ---------- Event-level checks (each event is independent) ----------
+var items = rawEvents map ((e, i) -> do {
+    var errors = eventErrors(e)
+    var isDuplicate =
+        isEmpty(errors)
+        and sizeOf(
+            rawEvents filter ((o, n) ->
+                n < i
+                and (o is Object)
+                and isEmpty(eventErrors(o))
+                and o.eventId == e.eventId
+            )
+        ) > 0
+    ---
+    {
+        index: i,
+        event: e,
+        errors: errors,
+        duplicate: isDuplicate
+    }
+})
+
+var validEvents =
+    (items filter ((x) -> isEmpty(x.errors) and !x.duplicate))
+        map ((x) -> x.event)
+---
+{
+    batchErrors: batchErrors,
+    sourceSystem: req.sourceSystem,
+    batchId: req.batchId,
+    items: items,
+    validEvents: validEvents,
+    validCount: sizeOf(validEvents)
+}   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+<logger level="INFO" doc:name="Log Validation Result" message="#['VALIDATED correlationId=' ++ vars.correlationId ++ ' batchId=' ++ (vars.validation.batchId default 'n/a') ++ ' events=' ++ (sizeOf(vars.validation.items) as String) ++ ' validForProcessing=' ++ (vars.validation.validCount as String) ++ ' batchErrors=' ++ (sizeOf(vars.validation.batchErrors) as String)]"/>
+<choice doc:name="Batch-level valid?">
+<!--    2a. Whole request is bad (sourceSystem/batchId/events problem) -> 400    -->
+<when expression="#[!isEmpty(vars.validation.batchErrors)]">
+<ee:transform doc:name="Build Batch 400 Error">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    valid: false,
+    validationStatus: "INVALID",
+    status: "INVALID_REQUEST",
+    errorCode: "INVALID_BATCH_REQUEST",
+    message: vars.validation.batchErrors[0].message,
+    correlationId: vars.correlationId,
+    validationReasons: vars.validation.batchErrors
+}   ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">
+<![CDATA[   400   ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</when>
+<!--    2b. Batch is structurally fine -> process what is valid    -->
+<otherwise>
+<choice doc:name="Any valid events?">
+<when expression="#[vars.validation.validCount > 0]">
+<ee:transform doc:name="Build Process API Request">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json
+---
+{
+    sourceSystem: vars.validation.sourceSystem,
+    batchId: vars.validation.batchId,
+    events: vars.validation.validEvents
+}   ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<flow-ref doc:name="Flow Reference" doc:id="140d9cbe-79e6-4723-8812-433ed941b92f" name="process-inventory-events-flow"/>
+<set-variable variableName="processResult" value="#[output application/java --- payload]" doc:name="Save Process result"/>
+</when>
+<otherwise>
+<logger level="INFO" doc:name="No valid events" message="#['NO VALID EVENTS correlationId=' ++ vars.correlationId ++ ' - Process API not called']"/>
+</otherwise>
+</choice>
+<!--    3. Merge rejected + processed results in original order    -->
+<ee:transform doc:name="Build Response (PDF format)">
+<ee:message>
+<ee:set-payload>
+<![CDATA[   %dw 2.0
+output application/json skipNullOn="everywhere"
+
+var items = vars.validation.items
+// Results returned by the Process API, in the same order as the events we sent it.
+var processed = vars.processResult.results default []
+
+fun str(v) = if (v is String) v else null
+fun ev(item, key) = if (item.event is Object) str(item.event[key]) else null
+
+fun rejected(item) = {
+    eventId: ev(item, "eventId"),
+    sku: ev(item, "sku"),
+    locationCode: ev(item, "locationCode"),
+    outcome: "REJECTED",
+    reason: item.errors[0].message,
+    reasonCode: item.errors[0].code,
+    validationReasons: item.errors,
+    retryable: false
+}
+
+fun duplicateInBatch(item) = {
+    eventId: ev(item, "eventId"),
+    sku: ev(item, "sku"),
+    locationCode: ev(item, "locationCode"),
+    outcome: "IGNORED_DUPLICATE",
+    reason: "Event ID appears more than once in this batch; only the first occurrence is processed",
+    reasonCode: "DUPLICATE_EVENT_IN_BATCH",
+    retryable: false
+}
+
+fun missingResult(item) = {
+    eventId: ev(item, "eventId"),
+    sku: ev(item, "sku"),
+    locationCode: ev(item, "locationCode"),
+    outcome: "FAILED",
+    reason: "No result was returned by the Process API for this event",
+    reasonCode: "NO_PROCESS_RESULT",
+    retryable: true
+}
+
+fun countOf(list, outcome) = sizeOf(list filter ((r) -> r.outcome == outcome))
+
+var results = items map ((item, idx) -> do {
+    // position of this event among the events that were sent to the Process API
+    var pos = sizeOf(items filter ((i, n) -> n < idx and isEmpty(i.errors) and !i.duplicate))
+    var p = processed[pos] default null
+    ---
+    if (!isEmpty(item.errors))
+        rejected(item)
+    else if (item.duplicate)
+        duplicateInBatch(item)
+    else if (p == null)
+        missingResult(item)
+    else
+        {
+            eventId: ev(item, "eventId"),
+            sku: ev(item, "sku"),
+            locationCode: ev(item, "locationCode")
+        } ++ p
+})
+---
+{
+    batchId: vars.validation.batchId,
+    sourceSystem: vars.validation.sourceSystem,
+    processedCount: sizeOf(results),
+    acceptedCount: countOf(results, "ACCEPTED"),
+    staleCount: countOf(results, "IGNORED_STALE"),
+    rejectedCount: countOf(results, "REJECTED"),
+    duplicateCount: countOf(results, "IGNORED_DUPLICATE"),
+    conflictCount: countOf(results, "CONFLICT"),
+    retryPendingCount: countOf(results, "RETRY_PENDING"),
+    failedCount: countOf(results, "FAILED"),
+    results: results,
+    correlationId: vars.correlationId
+}   ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<logger level="INFO" doc:name="Log Response Summary" message="#[output application/java --- 'COMPLETED correlationId=' ++ vars.correlationId ++ ' batchId=' ++ (payload.batchId default 'n/a') ++ ' processed=' ++ (payload.processedCount as String) ++ ' accepted=' ++ (payload.acceptedCount as String) ++ ' stale=' ++ (payload.staleCount as String) ++ ' rejected=' ++ (payload.rejectedCount as String) ++ ' duplicate=' ++ (payload.duplicateCount as String) ++ ' conflict=' ++ (payload.conflictCount as String) ++ ' failed=' ++ (payload.failedCount as String)]"/>
+</otherwise>
+</choice>
+</flow>
+<!--   ===================== INVOICE FRONTEND + EMAIL (merged) =====================   -->
+<!--   SMTP connection. All values come from config.properties (never hard-code the password).   -->
+<email:smtp-config name="Invoice_Email_SMTP" doc:name="Email SMTP">
+<email:smtps-connection host="${mail.smtp.host}" port="${mail.smtp.port}" user="${mail.user}" password="${mail.password}">
+<tls:context>
+<tls:trust-store insecure="true"/>
+</tls:context>
+</email:smtps-connection>
+</email:smtp-config>
+<!--   FLOW 1: serves the web page.  Open  http://localhost:8081/app/    -->
+
+<flow name="invoice-frontend-static-flow">
+<http:listener config-ref="Retail-Inventory-Sync-API-httpListenerConfig" path="/app/*" allowedMethods="GET" doc:name="Listener /app/*"/>
+<set-payload value="#[readUrl('classpath://web/index.html', 'text/plain')]" mimeType="text/html" encoding="UTF-8" doc:name="Load index.html"/>
+</flow>
+<!--   FLOW 2: receives the invoice JSON from the page and emails it.   -->
+<flow name="send-invoice-email-flow" doc:id="3d7bd52f-f627-4cb1-9d94-9827606e799a">
+<http:listener config-ref="Retail-Inventory-Sync-API-httpListenerConfig" path="/notify/invoice" allowedMethods="POST" doc:name="Listener POST /notify/invoice">
+<http:response statusCode="#[vars.httpStatus default 200]">
+<http:headers>
+<![CDATA[  #[{ "Content-Type": "application/json" }]  ]]>
+</http:headers>
+</http:response>
+</http:listener>
+<set-variable variableName="invoiceNo" value="#[payload.invoiceNo default 'N/A']" doc:name="Set invoiceNo"/>
+<!--   owner + warehouse + fulfilment (from properties) + optional customer email; blanks removed, duplicates removed   -->
+<set-variable variableName="recipients" doc:name="Set recipients" value="#[([Mule::p('mail.owner'), Mule::p('mail.warehouse'), Mule::p('mail.fulfilment'), payload.customerEmail] filter (($ default '') != '')) distinctBy $]"/>
+<logger level="INFO" doc:name="Log Email Request" message="#['INVOICE EMAIL invoice=' ++ vars.invoiceNo ++ ' recipients=' ++ sizeOf(vars.recipients)]"/>
+<choice doc:name="Any recipients?">
+<when expression="#[isEmpty(vars.recipients)]">
+<ee:transform doc:name="400 No recipients">
+<ee:message>
+<ee:set-payload>
+<![CDATA[  %dw 2.0
+output application/json
+---
+{ sent: false, error: "No recipients configured (set mail.owner in config.properties)" }  ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">400</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</when>
+<otherwise>
+<ee:transform doc:name="Build Invoice HTML">
+<ee:message>
+<ee:set-payload>
+<![CDATA[  %dw 2.0
+output text/plain
+fun esc(s) = ((s default "") as String) replace "&" with "&amp;" replace "<" with "&lt;" replace ">" with "&gt;"
+fun lowTag(l) = if (l.lowStock == true) " - LOW STOCK" else ""
+fun reasonTxt(l) = (l.reasonCode default "") ++ (if (l.reason != null) (": " ++ l.reason) else "")
+fun pub(l) = (l.publishedTo default []) joinBy ", "
+var rows = (payload.lines default []) map (l) ->
+  '<tr><td>$(esc(l.eventId))</td><td>$(esc(l.sku))</td><td>$(esc(l.locationCode))</td><td>$(esc(l.movementType))</td>'
+  ++ '<td>$(esc(l.eventVersion))</td><td>$(esc(l.eventTimestamp))</td>'
+  ++ '<td align="right">$(esc(l.quantityOnHand))</td><td align="right">$(esc(l.reservedQuantity))</td><td align="right">$(esc(l.availableQuantity default "-"))</td>'
+  ++ '<td>$(esc(l.unitOfMeasure))</td><td>$(esc(l.referenceDocument))</td>'
+  ++ '<td><b>$(esc(l.outcome))</b>$(esc(lowTag(l)))</td><td>$(esc(reasonTxt(l)))</td><td>$(esc(pub(l)))</td></tr>'
+---
+'<div style="font-family:Arial,sans-serif;max-width:900px"><h2>Inventory Update Invoice $(esc(payload.invoiceNo))</h2>'
+++ '<p>Date: $(esc(payload.date))<br>Source system: $(esc(payload.sourceSystem))<br>Batch ID: $(esc(payload.batchId))<br>Correlation ID: $(esc(payload.correlationId))<br>HTTP status: $(esc(payload.httpStatus))</p>'
+++ '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:12px"><tr style="background:#eeeeee"><th>Event ID</th><th>SKU</th><th>Location</th><th>Type</th><th>Version</th><th>Event timestamp</th><th>On hand</th><th>Reserved</th><th>Available</th><th>UoM</th><th>Reference</th><th>Outcome</th><th>Reason</th><th>Published to</th></tr>'
+++ (rows joinBy "") ++ '</table>'
+++ '<p>Processed $(esc(payload.counts.processed)) | Accepted $(esc(payload.counts.accepted)) | Stale $(esc(payload.counts.stale)) | Rejected $(esc(payload.counts.rejected)) | Duplicate $(esc(payload.counts.duplicate)) | Conflict $(esc(payload.counts.conflict)) | Retry pending $(esc(payload.counts.retryPending)) | Failed $(esc(payload.counts.failed))</p>'
+++ '<h3>Request sent</h3><pre style="background:#f4f4f4;padding:8px;font-size:12px;white-space:pre-wrap">$(esc(payload.requestJson))</pre>'
+++ '<h3>Full response</h3><pre style="background:#f4f4f4;padding:8px;font-size:12px;white-space:pre-wrap">$(esc(payload.responseJson))</pre></div>'  ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<set-variable variableName="invoiceHtml" value="#[payload]" doc:name="Save invoice HTML"/>
+<foreach collection="#[vars.recipients]" doc:name="For each recipient">
+<email:send config-ref="Invoice_Email_SMTP" fromAddress="${mail.from}" subject="#['Inventory invoice ' ++ vars.invoiceNo]" doc:name="Send Invoice Email">
+<email:to-addresses>
+<email:to-address value="#[payload]"/>
+</email:to-addresses>
+<email:body contentType="text/html">
+<email:content>#[vars.invoiceHtml]</email:content>
+</email:body>
+</email:send>
+</foreach>
+<ee:transform doc:name="Build OK response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[  %dw 2.0
+output application/json
+---
+{ sent: true, to: vars.recipients }  ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</otherwise>
+</choice>
+<!--   An email failure must never break inventory processing: it only reports sent=false to the page.   -->
+<error-handler>
+<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue">
+<logger level="ERROR" doc:name="Log Email Failure" message="#['INVOICE EMAIL FAILED invoice=' ++ (vars.invoiceNo default '') ++ ' reason=' ++ (error.description default '')]"/>
+<ee:transform doc:name="Build failure response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[  %dw 2.0
+output application/json
+---
+{ sent: false, error: error.description default "Email failed" }  ]]>
+</ee:set-payload>
+</ee:message>
+<ee:variables>
+<ee:set-variable variableName="httpStatus">500</ee:set-variable>
+</ee:variables>
+</ee:transform>
+</on-error-continue>
+</error-handler>
+</flow>
+</mule>
