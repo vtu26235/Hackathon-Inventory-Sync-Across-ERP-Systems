@@ -1,0 +1,361 @@
+#%RAML 1.0
+title: Retail Inventory Sync API
+description: >
+  Inventory event synchronization API.
+  Structural validation is performed by APIKit and the Experience API
+  DataWeave validation. Master-data, duplicate, stale-event, concurrency,
+  audit, and messaging checks are performed by the Process and System layers.
+version: v1
+baseUri: /api/v1
+mediaType: application/json
+protocols:
+  - HTTP
+
+types:
+  MovementType:
+    type: string
+    enum:
+      - GOODS_RECEIPT
+      - SALE
+      - RETURN
+      - TRANSFER
+      - ADJUSTMENT
+
+  Reason:
+    type: object
+    additionalProperties: false
+    properties:
+      code:
+        type: string
+        minLength: 1
+        example: SKU_NOT_FOUND
+      field:
+        type: string
+        required: false
+        example: sku
+      message:
+        type: string
+        minLength: 1
+        example: The supplied SKU does not exist in the product master.
+      category:
+        type: string
+        enum:
+          - INPUT
+          - BUSINESS
+          - MASTER_DATA
+          - ORDERING
+          - DUPLICATE
+          - CONCURRENCY
+          - TECHNICAL
+          - AUTHORIZATION
+      retryable:
+        type: boolean
+        default: false
+
+  InventoryEvent:
+    type: object
+    additionalProperties: false
+    properties:
+      eventId:
+        type: string
+        minLength: 1
+        maxLength: 30
+        example: INV-EVT-77120
+      eventVersion:
+        type: integer
+        minimum: 1
+        example: 14
+      eventTimestamp:
+        type: datetime
+        format: rfc3339
+        example: 2026-09-11T12:40:15+05:30
+      sku:
+        type: string
+        minLength: 1
+        maxLength: 40
+        example: SKU-TSHIRT-BLK-M
+      locationCode:
+        type: string
+        minLength: 1
+        maxLength: 20
+        example: WH-CHN-01
+      movementType:
+        type: MovementType
+      quantityOnHand:
+        type: integer
+        minimum: 0
+        example: 480
+      reservedQuantity:
+        type: integer
+        minimum: 0
+        example: 35
+      unitOfMeasure:
+        type: string
+        minLength: 1
+        maxLength: 10
+        example: EA
+      referenceDocument:
+        type: string
+        minLength: 1
+        maxLength: 40
+        required: false
+        example: GRN-2026-55210
+
+  InventoryBatchRequest:
+    type: object
+    additionalProperties: false
+    description: >
+      Send either a single "event" object or an "events" array
+      (exactly one of them). The "exactly one" rule is enforced in DataWeave.
+    properties:
+      sourceSystem:
+        type: string
+        minLength: 1
+        maxLength: 30
+        example: ERP-SAP-PRD
+      batchId:
+        type: string
+        minLength: 1
+        maxLength: 100
+        example: INV-BATCH-2026-09-11-0034
+      event:
+        type: any
+        required: false
+        description: >
+          Single event. Shape is documented by InventoryEvent but is checked
+          per event in DataWeave so one bad event never rejects the batch.
+      events:
+        type: any[]
+        minItems: 1
+        maxItems: 100
+        required: false
+        description: >
+          Array of events. Each item is checked individually in DataWeave
+          against InventoryEvent, with a per-event reason.
+
+  EventResult:
+    type: object
+    additionalProperties: false
+    properties:
+      eventId:
+        type: string
+        required: false
+      sku:
+        type: string
+        required: false
+      locationCode:
+        type: string
+        required: false
+      outcome:
+        type: string
+        enum:
+          - ACCEPTED
+          - IGNORED_STALE
+          - IGNORED_DUPLICATE
+          - REJECTED
+          - CONFLICT
+          - RETRY_PENDING
+          - FAILED
+      reason:
+        type: string
+        required: false
+        example: Stored version 11 is newer than event version 9
+      reasonCode:
+        type: string
+        required: false
+        example: STALE_EVENT_VERSION
+      validationReasons:
+        type: Reason[]
+        required: false
+      availableQuantity:
+        type: integer
+        minimum: 0
+        required: false
+        example: 445
+      lowStock:
+        type: boolean
+        required: false
+      publishedTo:
+        type: string[]
+        required: false
+      retryable:
+        type: boolean
+        required: false
+        default: false
+
+  InventoryBatchResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      batchId:
+        type: string
+        required: false
+      sourceSystem:
+        type: string
+        required: false
+      processedCount:
+        type: integer
+        minimum: 0
+      acceptedCount:
+        type: integer
+        minimum: 0
+      staleCount:
+        type: integer
+        minimum: 0
+      rejectedCount:
+        type: integer
+        minimum: 0
+      duplicateCount:
+        type: integer
+        minimum: 0
+      conflictCount:
+        type: integer
+        minimum: 0
+      retryPendingCount:
+        type: integer
+        minimum: 0
+      failedCount:
+        type: integer
+        minimum: 0
+      results:
+        type: EventResult[]
+      correlationId:
+        type: string
+
+  ApiError:
+    type: object
+    additionalProperties: false
+    properties:
+      valid:
+        type: boolean
+        enum: [false]
+      validationStatus:
+        type: string
+        enum: [INVALID]
+      status:
+        type: string
+        example: INVALID_REQUEST
+      errorCode:
+        type: string
+        example: APIKIT_BAD_REQUEST
+      message:
+        type: string
+        example: Request validation failed.
+      correlationId:
+        type: string
+        required: false
+      validationReasons:
+        type: Reason[]
+        required: false
+
+/inventory/events:
+  post:
+    displayName: Process inventory events
+    description: >
+      Accepts one batch containing a single event or multiple events.
+      Each event is processed independently, so valid events succeed
+      even when other events in the same batch are rejected or stale.
+      The HTTP status is 200 whenever the batch was processed and
+      per-event outcomes are returned.
+    headers:
+      X-Correlation-ID:
+        type: string
+        required: false
+        pattern: ^[A-Za-z0-9\-_.]{8,64}$
+        description: Optional. Generated by the API if not supplied.
+        example: c93f1a52-46b8-4d07-9e21-77ab0c5d3e64
+    body:
+      application/json:
+        type: InventoryBatchRequest
+        example: |
+          {
+            "sourceSystem": "ERP-SAP-PRD",
+            "batchId": "INV-BATCH-2026-09-11-0034",
+            "events": [
+              {
+                "eventId": "INV-EVT-77120",
+                "eventVersion": 14,
+                "eventTimestamp": "2026-09-11T12:40:15+05:30",
+                "sku": "SKU-TSHIRT-BLK-M",
+                "locationCode": "WH-CHN-01",
+                "movementType": "GOODS_RECEIPT",
+                "quantityOnHand": 480,
+                "reservedQuantity": 35,
+                "unitOfMeasure": "EA",
+                "referenceDocument": "GRN-2026-55210"
+              },
+              {
+                "eventId": "INV-EVT-77121",
+                "eventVersion": 9,
+                "eventTimestamp": "2026-09-11T12:40:18+05:30",
+                "sku": "SKU-SHOE-BRN-42",
+                "locationCode": "STR-CHN-07",
+                "movementType": "SALE",
+                "quantityOnHand": 12,
+                "reservedQuantity": 2,
+                "unitOfMeasure": "EA",
+                "referenceDocument": "POS-2026-881043"
+              }
+            ]
+          }
+    responses:
+      200:
+        description: >
+          The batch was processed. Each event carries its own outcome
+          (ACCEPTED, IGNORED_STALE, IGNORED_DUPLICATE, REJECTED, CONFLICT,
+          RETRY_PENDING or FAILED).
+        body:
+          application/json:
+            type: InventoryBatchResponse
+            example: |
+              {
+                "batchId": "INV-BATCH-2026-09-11-0034",
+                "sourceSystem": "ERP-SAP-PRD",
+                "processedCount": 2,
+                "acceptedCount": 1,
+                "staleCount": 1,
+                "rejectedCount": 0,
+                "duplicateCount": 0,
+                "conflictCount": 0,
+                "retryPendingCount": 0,
+                "failedCount": 0,
+                "results": [
+                  {
+                    "eventId": "INV-EVT-77120",
+                    "sku": "SKU-TSHIRT-BLK-M",
+                    "locationCode": "WH-CHN-01",
+                    "outcome": "ACCEPTED",
+                    "availableQuantity": 445,
+                    "lowStock": false,
+                    "publishedTo": ["warehouse", "fulfilment"]
+                  },
+                  {
+                    "eventId": "INV-EVT-77121",
+                    "sku": "SKU-SHOE-BRN-42",
+                    "locationCode": "STR-CHN-07",
+                    "outcome": "IGNORED_STALE",
+                    "reason": "Stored version 11 is newer than event version 9"
+                  }
+                ],
+                "correlationId": "c93f1a52-46b8-4d07-9e21-77ab0c5d3e64"
+              }
+      400:
+        description: Malformed JSON or request-level structural validation failure.
+        body:
+          application/json:
+            type: ApiError
+      415:
+        description: Content type is not supported.
+        body:
+          application/json:
+            type: ApiError
+      500:
+        description: Unexpected application or processing failure.
+        body:
+          application/json:
+            type: ApiError
+      503:
+        description: A required dependency (Process API, database or broker) is temporarily unavailable.
+        body:
+          application/json:
+            type: ApiError
